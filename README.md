@@ -3,7 +3,9 @@
 Shows your **Claude** and **Codex** plan usage limits (session / weekly windows, model-scoped
 limits, and time until each resets) where your system status icons live:
 
-<img src="images/ubuntu.png" alt="The widget in the Ubuntu top bar with its menu open" width="360">
+| Linux (Ubuntu) | macOS | Windows |
+|---|---|---|
+| <img src="images/ubuntu.png" alt="The widget in the Ubuntu top bar with its menu open" width="260"> | <img src="images/macos.png" alt="The widget in the macOS menu bar with its menu open" width="260"> | <img src="images/windows.png" alt="The widget on the Windows taskbar with its menu open" width="260"> |
 
 | OS | Where it appears | What it shows |
 |---|---|---|

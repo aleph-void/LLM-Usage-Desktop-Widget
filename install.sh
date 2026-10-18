@@ -20,8 +20,9 @@ warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # Any running copy (installed or run from a checkout) holds the single-instance lock.
+# macOS framework Pythons (python.org, Homebrew, Xcode) run as ".../MacOS/Python".
 stop_running() {
-    pkill -f 'python[0-9.]* .*usage_widget\.py' 2>/dev/null || true
+    pkill -f '[Pp]ython[0-9.]* .*usage_widget\.py' 2>/dev/null || true
     sleep 1
 }
 

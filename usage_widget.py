@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import threading
@@ -90,10 +91,27 @@ class NotUsed(Exception):
 # Helpers
 # --------------------------------------------------------------------------
 
+def _ssl_context() -> ssl.SSLContext:
+    # Verify against the OS trust store (macOS Keychain, Windows cert store) when truststore is
+    # installed. A frozen app's bundled OpenSSL otherwise looks for CA certs under the build
+    # machine's Python prefix, which doesn't exist on the user's Mac: CERTIFICATE_VERIFY_FAILED.
+    try:
+        import truststore
+    except ImportError:
+        return ssl.create_default_context()
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+
+_SSL_CONTEXT: ssl.SSLContext | None = None
+
+
 def http_json(url: str, headers: dict[str, str], timeout: float = 20) -> dict:
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is None:
+        _SSL_CONTEXT = _ssl_context()
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json", **headers})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):

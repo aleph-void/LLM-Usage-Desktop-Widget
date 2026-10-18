@@ -4,5 +4,7 @@ pystray>=0.19; sys_platform == "win32" or sys_platform == "darwin"
 Pillow>=9.1; sys_platform == "win32" or sys_platform == "darwin"
 # Windows: finds the empty space on the taskbar for the usage text (UI Automation).
 comtypes>=1.2; sys_platform == "win32"
+# TLS verification against the OS trust store; the frozen app has no usable CA bundle without it.
+truststore>=0.9; python_version >= "3.10" and (sys_platform == "win32" or sys_platform == "darwin")
 # Only needed for the Amazon Bedrock provider (spend + token counts). Linux: apt install python3-boto3.
 boto3>=1.28

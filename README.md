@@ -139,6 +139,41 @@ powershell -File packaging\windows\build.ps1                   # Windows → dis
 To sign the macOS build, set `CODESIGN_IDENTITY` (a "Developer ID Application" identity) and
 `INSTALLER_SIGN_IDENTITY` ("Developer ID Installer"). Notarization is not automated.
 
+### Code signing (Windows)
+
+The workflow Authenticode-signs `LLMUsageWidget.exe` and the setup `.exe` with
+[Azure Trusted Signing](https://learn.microsoft.com/azure/artifact-signing/) (the same setup as
+Virux), timestamps both, and checks the signatures before uploading. A tag build fails rather than
+publish an unsigned installer; a manual run without the secrets builds unsigned with a warning.
+It needs these repository (or organization) secrets:
+
+| Secret | What it is |
+|---|---|
+| `AZURE_TENANT_ID` | Entra ID tenant of the app registration that signs |
+| `AZURE_CLIENT_ID` | That app registration's client ID |
+| `AZURE_CLIENT_SECRET` | A client secret for it; also how the workflow decides whether to sign |
+| `AZ_TS_ENDPOINT` | The Trusted Signing account's regional endpoint, e.g. `https://eus.codesigning.azure.net` |
+| `AZ_TS_ACCOUNT` | Trusted Signing account name |
+| `AZ_TS_PROFILE` | Certificate profile name |
+
+The app registration needs the *Trusted Signing Certificate Profile Signer* role on the account.
+
+**Publisher name only, no address.** Windows shows the certificate's common name, the validated
+organization name ("Aleph Void LLC"), as the publisher in SmartScreen, the UAC prompt and the file's
+*Digital Signatures* tab. Create the **Public Trust** certificate profile with *Include street
+address* and *Include postal code* both **unticked** (the default) so the certificate carries no
+address. City, state and country are always part of a Public Trust certificate's details and can't
+be removed. `packaging/windows/verify-signature.ps1` fails the build if a signature is invalid,
+not timestamped, or its certificate includes a street address or postal code. Run it on a
+downloaded installer to check it yourself:
+
+```powershell
+powershell -File packaging\windows\verify-signature.ps1 .\LLM-Usage-Widget-<ver>-windows-setup.exe
+```
+
+The uninstaller that Inno Setup writes at install time is not signed. It runs without elevation
+(the install is per-user), so Windows doesn't show a publisher prompt for it.
+
 ## Amazon Bedrock (and bedrock-mantle)
 
 If Claude Code or Codex runs on Amazon Bedrock instead of a subscription, there are no session or weekly

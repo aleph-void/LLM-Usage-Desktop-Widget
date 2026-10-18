@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh api -X DELETE repos/aleph-void/Virux-AUv3/releases/*)",
+      "Bash(git push --force origin refs/tags/v*)"
+    ]
+  }
+}

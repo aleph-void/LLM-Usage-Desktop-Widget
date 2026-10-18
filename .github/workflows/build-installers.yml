@@ -65,16 +65,87 @@ jobs:
           name: macos-pkg-${{ matrix.runner }}
           path: dist/*.pkg
 
+  # Windows builds are Authenticode-signed with Azure Trusted Signing (the key never leaves
+  # Azure): the app's .exe before it is packaged, then the setup .exe. A tag build refuses to
+  # publish anything unsigned; a manual run without the secrets builds unsigned, with a warning.
+  # See "Code signing (Windows)" in README.md for the secrets and the certificate profile.
   windows:
     runs-on: windows-latest
+    env:
+      SIGN: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python -m pip install pyinstaller -r requirements.txt
-      - run: packaging/windows/build.ps1
+
+      - name: Require Windows signing config
+        shell: bash
+        run: |
+          if [ "$SIGN" != "true" ]; then
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::Azure Trusted Signing secrets not set; refusing to publish an UNSIGNED Windows installer. See 'Code signing (Windows)' in README.md."
+              exit 1
+            fi
+            echo "::warning::Azure Trusted Signing secrets not set; this build is UNSIGNED and SmartScreen will warn about it."
+          fi
+
+      - name: Build app
+        run: packaging/windows/build.ps1 -Step app
         shell: pwsh
+
+      - name: Sign app (Azure Trusted Signing)
+        if: env.SIGN == 'true'
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZ_TS_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZ_TS_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZ_TS_PROFILE }}
+          # Only our own launcher. The DLLs and .pyd files under _internal\ are Python's and
+          # third-party packages' (python3*.dll and the VC runtime already carry their vendors'
+          # signatures), so not recursing keeps our name off code we didn't write.
+          files-folder: build/windows/dist/LLMUsageWidget
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # The signing action can succeed without signing the file we care about, so check it,
+      # and check that the certificate shows the company name without an address.
+      - name: Verify app signature
+        if: env.SIGN == 'true'
+        run: packaging/windows/verify-signature.ps1 build/windows/dist/LLMUsageWidget/LLMUsageWidget.exe
+        shell: pwsh
+
+      - name: Build installer
+        run: packaging/windows/build.ps1 -Step installer
+        shell: pwsh
+
+      - name: Sign installer (Azure Trusted Signing)
+        if: env.SIGN == 'true'
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZ_TS_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZ_TS_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZ_TS_PROFILE }}
+          files-folder: dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify installer signature
+        if: env.SIGN == 'true'
+        run: packaging/windows/verify-signature.ps1 (Get-ChildItem dist -Filter *-windows-setup.exe).FullName
+        shell: pwsh
+
       - uses: actions/upload-artifact@v7
         with:
           name: windows-setup

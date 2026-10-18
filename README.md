@@ -43,7 +43,7 @@ Download from the GitHub release (built by `.github/workflows/build-installers.y
 
 | OS | File | Notes |
 |---|---|---|
-| Linux (Debian/Ubuntu) | `llm-usage-widget_<ver>_all.deb` | `sudo apt install ./llm-usage-widget_*.deb`, then log out and back in (or run `llm-usage-widget`). Starts at login for every user via `/etc/xdg/autostart`. |
+| Linux (Debian/Ubuntu) | `llm-usage-widget_<ver>_all.deb` | `sudo apt install ./llm-usage-widget_*.deb`. Starts right away for every logged-in user, and at login via `/etc/xdg/autostart`. |
 | macOS | `LLM-Usage-Widget-<ver>-macos-arm64.pkg` (Apple Silicon) or `-x86_64.pkg` (Intel) | Installs `/Applications/LLM Usage.app` plus a login LaunchAgent. Release builds are signed with a Developer ID and notarized by Apple. |
 | Windows | `LLM-Usage-Widget-<ver>-windows-setup.exe` | Per-user install, no admin rights needed. "Start automatically when I sign in" is ticked by default. The build is unsigned, so SmartScreen may warn: click **More info → Run anyway**. Uninstall from *Settings → Apps*. |
 

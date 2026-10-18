@@ -62,9 +62,44 @@ EOF
 cat > "$STAGE/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
+
+# Ubuntu's AppIndicators extension on GNOME 50 ignores indicators that start
+# after login (see README). Run in the user's session: reload it once if broken.
+RESCAN='
+command -v gdbus >/dev/null && command -v gnome-extensions >/dev/null || exit 0
+sleep 3
+case "$(gdbus call --session --dest org.kde.StatusNotifierWatcher \
+        --object-path /StatusNotifierWatcher \
+        --method org.kde.StatusNotifierWatcher.RegisterStatusNotifierItem /llm-usage-widget-probe 2>&1)" in
+    *UnknownMethod*) ;;
+    *) exit 0 ;;
+esac
+for ext in ubuntu-appindicators@ubuntu.com appindicatorsupport@rgcjonas.gmail.com; do
+    if gnome-extensions info "$ext" 2>/dev/null | grep -q "State: ACTIVE"; then
+        gnome-extensions disable "$ext" && sleep 1 && gnome-extensions enable "$ext"
+        exit 0
+    fi
+done'
+
+# Start the widget now for every user with a graphical session, instead of
+# waiting for their next login. Runs under each user's systemd manager, which
+# has the session's DISPLAY/WAYLAND_DISPLAY and D-Bus address.
+start_in_sessions() {
+    command -v loginctl >/dev/null && command -v systemd-run >/dev/null || return 0
+    for uid in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $1}'); do
+        [ -n "$(loginctl show-user "$uid" -p Display --value 2>/dev/null)" ] || continue
+        user=$(id -nu "$uid" 2>/dev/null) || continue
+        systemd-run --user --machine="$user@.host" --quiet --collect \
+            --description="LLM Usage Widget" /usr/bin/llm-usage-widget || true
+        systemd-run --user --machine="$user@.host" --quiet --collect \
+            /bin/sh -c "$RESCAN" || true
+    done
+}
+
 if [ "$1" = configure ]; then
     command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t /usr/share/icons/hicolor || true
     command -v update-desktop-database >/dev/null && update-desktop-database -q /usr/share/applications || true
+    start_in_sessions
 fi
 EOF
 cat > "$STAGE/DEBIAN/prerm" <<'EOF'

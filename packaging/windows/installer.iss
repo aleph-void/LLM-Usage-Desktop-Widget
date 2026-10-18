@@ -37,6 +37,7 @@ Source: "..\..\build\windows\dist\LLMUsageWidget\*"; DestDir: "{app}"; Flags: ig
 
 [Icons]
 Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
+Name: "{userprograms}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: startup
 
 [Run]

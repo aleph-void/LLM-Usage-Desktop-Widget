@@ -147,8 +147,8 @@ jobs:
           path: dist/*.pkg
 
   # Windows builds are Authenticode-signed with Azure Trusted Signing (the key never leaves
-  # Azure): the app's .exe before it is packaged, then the setup .exe. A tag build refuses to
-  # publish anything unsigned; a manual run without the secrets builds unsigned, with a warning.
+  # Azure): the app's .exe before it is packaged, then the setup and uninstall .exe files. A tag
+  # build refuses to publish anything unsigned; a manual run without the secrets builds unsigned, with a warning.
   # See "Code signing (Windows)" in README.md for the secrets and the certificate profile.
   windows:
     runs-on: windows-latest
@@ -222,15 +222,17 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      - name: Verify installer signature
+      - name: Verify installer signatures
         if: env.SIGN == 'true'
-        run: packaging/windows/verify-signature.ps1 (Get-ChildItem dist -Filter *-windows-setup.exe).FullName
+        run: packaging/windows/verify-signature.ps1 (Get-ChildItem dist -Filter *-windows-*.exe).FullName
         shell: pwsh
 
       - uses: actions/upload-artifact@v7
         with:
           name: windows-setup
-          path: dist/*-windows-setup.exe
+          path: |
+            dist/*-windows-setup.exe
+            dist/*-windows-uninstall.exe
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

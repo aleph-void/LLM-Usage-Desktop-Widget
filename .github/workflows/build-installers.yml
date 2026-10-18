@@ -48,6 +48,7 @@ jobs:
 
   macos:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: macos-latest       # Apple Silicon
@@ -137,7 +138,14 @@ jobs:
               [ -z "$id" ] || xcrun notarytool log "$id" "${auth[@]}" || true
               exit 1
             fi
-            xcrun stapler staple "$pkg"
+            # Stapling fetches the ticket from Apple's CloudKit, which can drop the connection or
+            # lag just after notarization (Error 68), so retry before giving up.
+            for attempt in 1 2 3 4 5; do
+              xcrun stapler staple "$pkg" && break
+              [ "$attempt" -lt 5 ] || exit 1
+              echo "stapler failed (attempt $attempt), retrying in $((attempt * 30))s"
+              sleep $((attempt * 30))
+            done
             xcrun stapler validate "$pkg"
             spctl -a -vvv -t install "$pkg"
           done

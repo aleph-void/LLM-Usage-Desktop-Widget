@@ -6,6 +6,10 @@ this machine, so there is nothing to configure: if `claude` and `codex` are
 logged in, the widget works. Credentials are only ever read, never written,
 and are sent only to the provider that issued them.
 
+When Claude Code or Codex run on Amazon Bedrock (including the bedrock-mantle
+endpoint) there are no plan limits; instead it shows Bedrock spend and token
+counts using your AWS credentials (needs boto3).
+
 Appears where the system status icons live: the Linux top bar (AppIndicator,
 via the system's PyGObject), the macOS menu bar and the Windows notification
 area (pystray + Pillow). `--widget` shows a floating window that needs only
@@ -21,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -29,7 +34,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 __version__ = "1.0.0"
@@ -47,13 +52,15 @@ MIN_INTERVAL = 60
 @dataclass
 class Limit:
     label: str
-    percent: float
+    percent: float | None  # None: an informational row (spend, token counts) with no bar
     resets_at: datetime | None = None
     severity: str = ""  # "normal" | "warning" | "critical"; derived from percent if empty
 
     def level(self) -> str:
         if self.severity in ("warning", "critical"):
             return self.severity
+        if self.percent is None:
+            return "normal"
         if self.percent >= 90:
             return "critical"
         if self.percent >= 75:
@@ -68,10 +75,15 @@ class ProviderUsage:
     limits: list[Limit] = field(default_factory=list)
     error: str = ""
     fetched_at: float = 0.0
+    summary: str = ""  # top-bar text when no limit has a percentage, e.g. "$12.34"
 
 
 class AuthError(Exception):
     """Login missing or expired; the user has to act in the provider's CLI."""
+
+
+class NotUsed(Exception):
+    """The CLI is set up for another backend (e.g. Bedrock); leave this provider out."""
 
 
 # --------------------------------------------------------------------------
@@ -141,6 +153,18 @@ def config_dir() -> Path:
     return base / APP_NAME
 
 
+def load_config() -> dict:
+    try:
+        data = json.loads((config_dir() / "config.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _truthy(value) -> bool:
+    return str(value or "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
 # --------------------------------------------------------------------------
 # Claude (claude.ai subscription via Claude Code's OAuth login)
 # --------------------------------------------------------------------------
@@ -168,7 +192,27 @@ def _claude_credentials() -> dict:
     for data in sources:
         if isinstance(data, dict) and data.get("claudeAiOauth", {}).get("accessToken"):
             return data["claudeAiOauth"]
+    if claude_uses_bedrock():
+        raise NotUsed
     raise AuthError("not logged in — run `claude` and /login")
+
+
+def claude_code_env() -> dict[str, str]:
+    """This process's environment overlaid with the `env` block of Claude Code's settings."""
+    env = dict(os.environ)
+    cfg = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
+    try:
+        block = json.loads((cfg / "settings.json").read_text(encoding="utf-8")).get("env")
+        if isinstance(block, dict):
+            env.update({str(k): str(v) for k, v in block.items()})
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+    return env
+
+
+def claude_uses_bedrock(env: dict[str, str] | None = None) -> bool:
+    env = claude_code_env() if env is None else env
+    return _truthy(env.get("CLAUDE_CODE_USE_BEDROCK")) or "bedrock" in env.get("ANTHROPIC_BASE_URL", "")
 
 
 def fetch_claude() -> ProviderUsage:
@@ -220,15 +264,29 @@ def _codex_tokens() -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
+        if codex_bedrock_urls():
+            raise NotUsed from None
         raise AuthError("not logged in — run `codex login`") from None
     except (OSError, json.JSONDecodeError) as e:
         raise AuthError(f"cannot read {path}: {e}") from None
     tokens = data.get("tokens") or {}
     if not tokens.get("access_token"):
+        if codex_bedrock_urls():
+            raise NotUsed
         if data.get("OPENAI_API_KEY"):
             raise AuthError("API-key login has no plan limits — use `codex login` with ChatGPT")
         raise AuthError("not logged in — run `codex login`")
     return tokens
+
+
+def codex_bedrock_urls() -> list[str]:
+    """base_url values in Codex's config.toml that point at Bedrock (runtime or bedrock-mantle)."""
+    path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "config.toml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return re.findall(r"""^\s*base_url\s*=\s*["']([^"']*bedrock[^"']*)["']""", text, re.MULTILINE)
 
 
 def _codex_windows(prefix: str, rl: dict | None, out: list[Limit]) -> None:
@@ -268,7 +326,243 @@ def fetch_codex() -> ProviderUsage:
     return usage
 
 
-PROVIDERS = (("Claude", fetch_claude), ("Codex", fetch_codex))
+# --------------------------------------------------------------------------
+# Amazon Bedrock (pay-per-token via AWS credentials; also the bedrock-mantle endpoint)
+# --------------------------------------------------------------------------
+#
+# Bedrock has no plan windows, so this shows what there is instead: spend against
+# an AWS Budget (a real percentage, if one is configured), month-to-date Bedrock
+# spend from Cost Explorer, and today's token counts from CloudWatch. It turns on
+# by itself when Claude Code or Codex is set up for Bedrock; config.json can
+# override or disable it:
+#
+#     "bedrock": {"profile": "work", "regions": ["us-east-1"], "budget": "bedrock-monthly",
+#                 "cost_explorer": true, "cost_interval": 21600, "metrics_interval": 900}
+#
+# Cost Explorer charges $0.01 per request and billing data only updates a few
+# times a day, so spend is cached for `cost_interval` seconds (default 6 h) and
+# token counts for `metrics_interval` (default 15 min), across restarts too.
+
+COST_INTERVAL = 6 * 3600
+METRICS_INTERVAL = 15 * 60
+AWS_REGION_RE = re.compile(r"\b[a-z]{2}(?:-gov)?-[a-z]+-\d\b")
+AWS_AUTH_CODES = {"ExpiredToken", "ExpiredTokenException", "UnrecognizedClientException",
+                  "InvalidClientTokenId", "InvalidSignatureException"}
+
+
+def bedrock_settings() -> dict | None:
+    """What to query, or None when nothing on this machine uses Bedrock."""
+    cfg = load_config().get("bedrock")
+    if cfg is False:
+        return None
+    env = claude_code_env()
+    urls = codex_bedrock_urls()
+    if not isinstance(cfg, dict):
+        if not (cfg is True or claude_uses_bedrock(env) or urls):
+            return None
+        cfg = {}
+    regions = list(cfg.get("regions") or [])
+    if not regions:
+        if claude_uses_bedrock(env):
+            regions.append(env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or "")
+        for url in urls:
+            m = AWS_REGION_RE.search(url)
+            regions.append(m.group(0) if m else "")
+    return {
+        "profile": cfg.get("profile") or env.get("AWS_PROFILE") or None,
+        "regions": list(dict.fromkeys(r for r in regions if r)),
+        "budget": cfg.get("budget") or "",
+        "cost_explorer": cfg.get("cost_explorer", True),
+        "cost_interval": max(MIN_INTERVAL, int(cfg.get("cost_interval", COST_INTERVAL))),
+        "metrics_interval": max(MIN_INTERVAL, int(cfg.get("metrics_interval", METRICS_INTERVAL))),
+    }
+
+
+def _cached(key: str, max_age: float, compute):
+    """compute() at most once per max_age seconds, remembered in a file across restarts."""
+    path = config_dir() / "bedrock-cache.json"
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cache = {}
+    now = time.time()
+    entry = cache.get(key)
+    if isinstance(entry, dict) and 0 <= now - entry.get("at", 0) < max_age:
+        return entry["value"]
+    value = compute()
+    cache = {k: v for k, v in cache.items() if isinstance(v, dict) and now - v.get("at", 0) < 7 * 86400}
+    cache[key] = {"at": now, "value": value}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cache), encoding="utf-8")
+    except OSError:
+        pass
+    return value
+
+
+def _money(amount: float, unit: str) -> str:
+    return f"${amount:,.2f}" if unit in ("", "USD") else f"{amount:,.2f} {unit}"
+
+
+def _human(n: float) -> str:
+    for size, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "k")):
+        if n >= size:
+            return f"{n / size:.1f}{suffix}"
+    return f"{n:.0f}"
+
+
+def _next_period(unit: str | None) -> datetime | None:
+    """When an AWS Budget of this TimeUnit starts its next period (budgets run on UTC)."""
+    now = datetime.now(timezone.utc)
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if unit == "DAILY":
+        return day + timedelta(days=1)
+    if unit == "MONTHLY":
+        return day.replace(year=now.year + now.month // 12, month=now.month % 12 + 1, day=1)
+    if unit == "QUARTERLY":
+        month = (now.month - 1) // 3 * 3 + 4
+        return day.replace(year=now.year + (month > 12), month=(month - 1) % 12 + 1, day=1)
+    if unit == "ANNUALLY":
+        return day.replace(year=now.year + 1, month=1, day=1)
+    return None
+
+
+def _bedrock_budget(session, name: str) -> dict:
+    account = session.client("sts").get_caller_identity()["Account"]
+    budget = session.client("budgets", region_name="us-east-1").describe_budget(
+        AccountId=account, BudgetName=name)["Budget"]
+    spend = (budget.get("CalculatedSpend") or {}).get("ActualSpend") or {}
+    return {"spent": float(spend.get("Amount") or 0), "limit": float(budget["BudgetLimit"]["Amount"]),
+            "unit": budget["BudgetLimit"].get("Unit", "USD"), "time_unit": budget.get("TimeUnit")}
+
+
+def _bedrock_month_cost(session) -> dict:
+    """Month-to-date cost of every billed service with Bedrock in its name.
+
+    Third-party models (Claude among them) bill as Marketplace services named
+    like "Claude Sonnet 4.5 (Amazon Bedrock Edition)", not as "Amazon Bedrock".
+    """
+    ce = session.client("ce", region_name="us-east-1")
+    today = datetime.now(timezone.utc).date()
+    request = {
+        "TimePeriod": {"Start": today.replace(day=1).isoformat(), "End": (today + timedelta(days=1)).isoformat()},
+        "Granularity": "MONTHLY",
+        "Metrics": ["UnblendedCost"],
+        "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
+    }
+    total, unit = 0.0, "USD"
+    while True:
+        resp = ce.get_cost_and_usage(**request)
+        for period in resp.get("ResultsByTime", []):
+            for group in period.get("Groups", []):
+                if "bedrock" in group["Keys"][0].lower():
+                    cost = group["Metrics"]["UnblendedCost"]
+                    total += float(cost["Amount"])
+                    unit = cost.get("Unit") or unit
+        if not resp.get("NextPageToken"):
+            return {"amount": total, "unit": unit}
+        request["NextPageToken"] = resp["NextPageToken"]
+
+
+def _bedrock_tokens(session, region: str, since: datetime) -> dict:
+    """Input/output tokens since `since`, bedrock-runtime and bedrock-mantle combined."""
+    def search(metric):
+        return f"SUM(SEARCH('{{AWS/Bedrock,ModelId}} MetricName=\"{metric}\"', 'Sum', 300))"
+
+    def stat(metric):
+        return {"Metric": {"Namespace": "AWS/BedrockMantle", "MetricName": metric}, "Period": 300, "Stat": "Sum"}
+
+    queries = [
+        {"Id": "runtime_in", "Expression": search("InputTokenCount")},
+        {"Id": "runtime_out", "Expression": search("OutputTokenCount")},
+        {"Id": "mantle_in", "MetricStat": stat("TotalInputTokens")},
+        {"Id": "mantle_out", "MetricStat": stat("TotalOutputTokens")},
+    ]
+    totals = {"in": 0.0, "out": 0.0}
+    pages = session.client("cloudwatch", region_name=region).get_paginator("get_metric_data").paginate(
+        MetricDataQueries=queries, StartTime=since, EndTime=datetime.now(timezone.utc))
+    for page in pages:
+        for result in page.get("MetricDataResults", []):
+            totals[result["Id"].rsplit("_", 1)[1]] += sum(result.get("Values", []))
+    return totals
+
+
+def fetch_bedrock() -> ProviderUsage:
+    settings = bedrock_settings()
+    if settings is None:
+        raise NotUsed
+    try:
+        import boto3
+        from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, ProfileNotFound
+    except ImportError:
+        raise RuntimeError("needs boto3 — pip install boto3 (Debian/Ubuntu: apt install python3-boto3)") from None
+
+    profile = settings["profile"]
+    login = "aws sso login" + (f" --profile {profile}" if profile else "")
+    try:
+        session = boto3.Session(profile_name=profile)
+    except ProfileNotFound:
+        raise AuthError(f"AWS profile {profile!r} not found") from None
+    if session.get_credentials() is None:
+        raise AuthError(f"no AWS credentials — run `{login}` or set a profile")
+    regions = settings["regions"] or [session.region_name or "us-east-1"]
+    usage = ProviderUsage("Bedrock")
+    who = profile or "default"
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+
+    def attempt(what, fn):
+        """Run one query; credential problems fail the provider, anything else becomes a note."""
+        try:
+            return fn()
+        except NoCredentialsError:
+            raise AuthError(f"no AWS credentials — run `{login}`") from None
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in AWS_AUTH_CODES:
+                raise AuthError(f"AWS credentials expired — run `{login}`") from None
+            usage.limits.append(Limit(f"⚠ {what}: {code or e}", None))
+        except BotoCoreError as e:
+            # Expired SSO sessions surface as TokenRetrievalError / SSOTokenLoadError.
+            if "token" in type(e).__name__.lower():
+                raise AuthError(f"AWS SSO session expired — run `{login}`") from None
+            usage.limits.append(Limit(f"⚠ {what}: {e}", None))
+        return None
+
+    if settings["budget"]:
+        name = settings["budget"]
+        b = attempt("budget", lambda: _cached(f"budget:{who}:{name}", settings["cost_interval"],
+                                              lambda: _bedrock_budget(session, name)))
+        if b:
+            pct = b["spent"] / b["limit"] * 100 if b["limit"] else 0.0
+            usage.limits.append(Limit(f"Budget {_money(b['spent'], b['unit'])} / {_money(b['limit'], b['unit'])}",
+                                      pct, _next_period(b["time_unit"])))
+
+    if settings["cost_explorer"]:
+        cost = attempt("Cost Explorer", lambda: _cached(f"cost:{who}:{month}", settings["cost_interval"],
+                                                        lambda: _bedrock_month_cost(session)))
+        if cost:
+            usage.summary = _money(cost["amount"], cost["unit"])
+            usage.limits.append(Limit(f"This month {usage.summary}", None, _next_period("MONTHLY")))
+
+    midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    tokens_in = tokens_out = 0.0
+    got_tokens = False
+    for region in regions:
+        t = attempt(f"CloudWatch {region}", lambda r=region: _cached(
+            f"tokens:{who}:{r}:{midnight.date()}", settings["metrics_interval"],
+            lambda: _bedrock_tokens(session, r, midnight)))
+        if t:
+            got_tokens = True
+            tokens_in += t["in"]
+            tokens_out += t["out"]
+    if got_tokens:
+        usage.limits.append(Limit(f"Tokens today {_human(tokens_in)} in · {_human(tokens_out)} out", None))
+        if not usage.summary:
+            usage.summary = f"{_human(tokens_in + tokens_out)} tok"
+    return usage
+
+
+PROVIDERS = (("Claude", fetch_claude), ("Codex", fetch_codex), ("Bedrock", fetch_bedrock))
 
 
 def fetch_all() -> list[ProviderUsage]:
@@ -276,6 +570,8 @@ def fetch_all() -> list[ProviderUsage]:
     for name, fn in PROVIDERS:
         try:
             u = fn()
+        except NotUsed:
+            continue
         except AuthError as e:
             u = ProviderUsage(name, error=str(e))
         except Exception as e:  # never let one provider break the widget
@@ -295,8 +591,11 @@ def print_once() -> int:
         if u.error:
             print(f"  ! {u.error}")
         for lim in u.limits:
-            bar = "#" * round(lim.percent / 5)
             reset = format_remaining(lim.resets_at)
+            if lim.percent is None:
+                print(f"  {lim.label}" + (f"  (resets {reset})" if reset else ""))
+                continue
+            bar = "#" * round(lim.percent / 5)
             print(f"  {lim.label:<24} {lim.percent:5.0f}%  [{bar:<20}]  {('resets ' + reset) if reset else ''}")
     return 0
 
@@ -317,6 +616,7 @@ THEME = {
     "error": "#ff8a80",
     "claude": "#d97757",
     "codex": "#10a37f",
+    "bedrock": "#ff9900",
 }
 BAR_WIDTH = 210
 BAR_HEIGHT = 6
@@ -381,10 +681,7 @@ class Widget:
     # -- config --------------------------------------------------------------
 
     def _load_config(self) -> dict:
-        try:
-            return json.loads(self.config_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
+        return load_config()
 
     def _save_config(self) -> None:
         try:
@@ -508,6 +805,9 @@ class Widget:
         top = tk.Frame(row, bg=THEME["panel"])
         top.pack(fill="x")
         tk.Label(top, text=lim.label, fg=THEME["fg"], bg=THEME["panel"], font=self.f_label).pack(side="left")
+        if lim.percent is None:
+            self._draw_reset(row, lim)
+            return
         color = THEME[lim.level()]
         tk.Label(top, text=f"{lim.percent:.0f}%", fg=color if lim.level() != "normal" else THEME["fg"],
                  bg=THEME["panel"], font=self.f_label).pack(side="right")
@@ -518,7 +818,10 @@ class Widget:
         filled = max(0, min(100, lim.percent)) / 100 * BAR_WIDTH
         if filled:
             bar.create_rectangle(0, 0, filled, BAR_HEIGHT, fill=color, width=0)
+        self._draw_reset(row, lim)
 
+    def _draw_reset(self, row, lim: Limit):
+        tk = self.tk
         reset = format_remaining(lim.resets_at)
         if reset:
             local = lim.resets_at.astimezone().strftime("%a %H:%M")
@@ -536,7 +839,13 @@ class Widget:
 USAGE_PAGES = {
     "Claude": "https://claude.ai/settings/usage",
     "Codex": "https://chatgpt.com/codex/settings/usage",
+    "Bedrock": "https://console.aws.amazon.com/costmanagement/home#/cost-explorer",
 }
+
+
+def usage_pages(data: list[ProviderUsage]) -> dict[str, str]:
+    shown = {u.name for u in data}
+    return {name: url for name, url in USAGE_PAGES.items() if name in shown or (not data and name != "Bedrock")}
 
 # Three rising bars, drawn white like the other top-bar icons; tinted when a limit runs high.
 ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
@@ -632,11 +941,13 @@ class Tray:
         parts, worst = [], "normal"
         rank = {"normal": 0, "warning": 1, "critical": 2}
         for u in self.data:
-            if u.limits:
-                top = max(u.limits, key=lambda l: l.percent)
+            top = top_limit(u)
+            if top:
                 parts.append(f"{u.name} {top.percent:.0f}%")
                 if rank[top.level()] > rank[worst]:
                     worst = top.level()
+            elif u.summary:
+                parts.append(f"{u.name} {u.summary}")
             elif u.error:
                 parts.append(f"{u.name} –")
         if self.data and not any(u.limits for u in self.data):
@@ -660,6 +971,10 @@ class Tray:
             if u.error:
                 info(("⚠ stale — " if u.limits else "⚠ ") + u.error)
             for lim in u.limits:
+                if lim.percent is None:
+                    reset = format_remaining(lim.resets_at)
+                    info(f"    {lim.label}" + (f"  ·  resets in {reset}" if reset else ""))
+                    continue
                 filled = round(max(0, min(100, lim.percent)) / 10)
                 bar = "█" * filled + "░" * (10 - filled)
                 mark = {"warning": "  ▲", "critical": "  ●"}.get(lim.level(), "")
@@ -674,7 +989,7 @@ class Tray:
         refresh = Gtk.MenuItem(label="Refresh now")
         refresh.connect("activate", self.refresh)
         menu.append(refresh)
-        for name, url in USAGE_PAGES.items():
+        for name, url in usage_pages(self.data).items():
             item = Gtk.MenuItem(label=f"Open {name} usage page")
             item.connect("activate", lambda _w, u=url: Gtk.show_uri_on_window(None, u, Gtk.get_current_event_time()))
             menu.append(item)
@@ -695,7 +1010,9 @@ class Tray:
 # --------------------------------------------------------------------------
 
 def top_limit(u: ProviderUsage) -> Limit | None:
-    return max(u.limits, key=lambda l: l.percent) if u.limits else None
+    """The fullest limit that has a percentage."""
+    bars = [lim for lim in u.limits if lim.percent is not None]
+    return max(bars, key=lambda l: l.percent) if bars else None
 
 
 def summary_text(data: list[ProviderUsage]) -> str:
@@ -705,6 +1022,8 @@ def summary_text(data: list[ProviderUsage]) -> str:
         top = top_limit(u)
         if top:
             parts.append(f"{u.name} {top.percent:.0f}%")
+        elif u.summary:
+            parts.append(f"{u.name} {u.summary}")
         elif u.error:
             parts.append(f"{u.name} –")
     return "  ".join(parts)
@@ -719,7 +1038,7 @@ def gauge_image(data: list[ProviderUsage], size: int = 64):
 
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    names = [u.name for u in data] or [name for name, _ in PROVIDERS]
+    names = [u.name for u in data] or ["Claude", "Codex"]
     by_name = {u.name: u for u in data}
     gap = size // 10
     width = (size - gap * (len(names) + 1)) // len(names)
@@ -778,12 +1097,13 @@ class DesktopTray:
             for lim in u.limits:
                 mark = {"warning": "  ▲", "critical": "  ●"}.get(lim.level(), "")
                 reset = format_remaining(lim.resets_at)
-                info(f"    {lim.label}:  {lim.percent:.0f}%{mark}" + (f"   ·  resets in {reset}" if reset else ""))
+                value = "" if lim.percent is None else f":  {lim.percent:.0f}%{mark}"
+                info(f"    {lim.label}{value}" + (f"   ·  resets in {reset}" if reset else ""))
         items.append(sep)
         if self.last_fetch:
             info("Updated " + time.strftime("%H:%M", time.localtime(self.last_fetch)))
         items.append(item("Refresh now", lambda: self.wake.set()))
-        for name, url in USAGE_PAGES.items():
+        for name, url in usage_pages(self.data).items():
             items.append(item(f"Open {name} usage page", (lambda u: lambda: webbrowser.open(u))(url)))
         items.append(item("Quit", lambda: self.icon.stop()))
         return self.pystray.Menu(*items)

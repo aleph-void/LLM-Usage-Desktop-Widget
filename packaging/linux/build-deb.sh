@@ -49,7 +49,7 @@ Section: utils
 Priority: optional
 Architecture: all
 Depends: python3 (>= 3.9), python3-gi, gir1.2-ayatanaappindicator3-0.1 | gir1.2-appindicator3-0.1
-Recommends: python3-tk, gnome-shell-extension-appindicator | gnome-shell-extension-ubuntu-appindicators
+Recommends: python3-tk, python3-boto3, gnome-shell-extension-appindicator | gnome-shell-extension-ubuntu-appindicators
 Maintainer: $MAINTAINER
 Description: Claude and Codex usage limits in the desktop top bar
  Shows the session and weekly usage limits of your Claude and Codex (ChatGPT)

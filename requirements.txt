@@ -2,3 +2,5 @@
 # Linux uses the system's PyGObject + AppIndicator; the floating widget needs nothing.
 pystray>=0.19; sys_platform == "win32" or sys_platform == "darwin"
 Pillow>=9.1; sys_platform == "win32" or sys_platform == "darwin"
+# Only needed for the Amazon Bedrock provider (spend + token counts). Linux: apt install python3-boto3.
+boto3>=1.28

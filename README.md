@@ -25,6 +25,7 @@ token is sent only to the provider that issued it.
 |---|---|---|
 | Claude | macOS Keychain `Claude Code-credentials`, else `~/.claude/.credentials.json` (`$CLAUDE_CONFIG_DIR`) | `api.anthropic.com/api/oauth/usage` |
 | Codex  | `~/.codex/auth.json` (`$CODEX_HOME`) | `chatgpt.com/backend-api/wham/usage` |
+| Bedrock | Your AWS credentials (profile, SSO, env vars), via boto3 | AWS Budgets, Cost Explorer, CloudWatch |
 
 > These are the same internal endpoints the official CLIs use for their `/usage` and `/status`
 > screens. They are undocumented and may change; if a provider shows an error after an update,
@@ -132,6 +133,55 @@ powershell -File packaging\windows\build.ps1                   # Windows → dis
 
 To sign the macOS build, set `CODESIGN_IDENTITY` (a "Developer ID Application" identity) and
 `INSTALLER_SIGN_IDENTITY` ("Developer ID Installer"). Notarization is not automated.
+
+## Amazon Bedrock (and bedrock-mantle)
+
+If Claude Code or Codex runs on Amazon Bedrock instead of a subscription, there are no session or weekly
+limits to show. Instead the widget adds a **Bedrock** section that shows:
+
+- **Budget:** spend against an [AWS Budget](https://console.aws.amazon.com/billing/home#/budgets) as a
+  percentage bar that resets with the budget period. This only appears if you name a budget (see below).
+- **This month:** month-to-date spend for every service with "Bedrock" in its name, from Cost Explorer.
+  Third-party models such as Claude are billed as Marketplace services named like
+  `Claude Sonnet 4.5 (Amazon Bedrock Edition)`, and these are included.
+- **Tokens today:** input and output tokens since local midnight, from CloudWatch. This covers both the
+  `bedrock-runtime` endpoint (`AWS/Bedrock`) and the OpenAI/Anthropic-compatible `bedrock-mantle` endpoint
+  (`AWS/BedrockMantle`).
+
+The section turns on automatically when Claude Code's settings set `CLAUDE_CODE_USE_BEDROCK`
+(or an `ANTHROPIC_BASE_URL` containing `bedrock`), or when a `base_url` in `~/.codex/config.toml` points at
+Bedrock. The AWS profile and region come from the same place: `AWS_PROFILE` and `AWS_REGION` in Claude
+Code's `env` block, or the region in Codex's `base_url`. In that case the Claude or Codex section
+is hidden if that CLI has no subscription login. To override any of this, add a `bedrock` entry to
+`config.json` in the widget's config folder (`~/.config/llm-usage-widget/` on Linux,
+`~/Library/Application Support/llm-usage-widget/` on macOS, `%APPDATA%\llm-usage-widget\` on Windows):
+
+```json
+{
+  "bedrock": {
+    "profile": "work",
+    "regions": ["us-east-1", "us-west-2"],
+    "budget": "bedrock-monthly",
+    "cost_explorer": true,
+    "cost_interval": 21600,
+    "metrics_interval": 900
+  }
+}
+```
+
+Use `"bedrock": true` to turn the section on with the defaults, or `false` to hide it.
+
+This needs **boto3**: it is in `requirements.txt` and in the macOS and Windows packages. On Linux, run
+`sudo apt install python3-boto3` (or install it for the system Python another way). The IAM identity
+needs `ce:GetCostAndUsage`, `cloudwatch:GetMetricData`, and, for a budget, `budgets:ViewBudget` and
+`sts:GetCallerIdentity`. If a permission is missing, only that row shows an error. If the credentials
+have expired (for example an SSO session), the section says to run `aws sso login`.
+
+**Cost:** Cost Explorer charges $0.01 per request and its data only updates a few times a day, so spend
+(and the budget) is fetched at most every `cost_interval` seconds (6 h by default, about $1.20 a month).
+Token counts are fetched every `metrics_interval` seconds (15 min). Both are cached in
+`bedrock-cache.json` next to `config.json`, so restarts don't refetch them, and *Refresh now* doesn't
+bypass the cache either. Billing data can lag by a day or more, so don't treat this as a spending alarm.
 
 ## Adding a provider
 

@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Copies the app to %LOCALAPPDATA%\llm-usage-widget with its own virtualenv
-    (pystray + Pillow), adds Start Menu and Startup shortcuts, and starts it.
+    (requirements.txt), adds Start Menu and Startup shortcuts, and starts it.
     No administrator rights are needed. Settings in %APPDATA%\llm-usage-widget
     are left in place on uninstall.
 
@@ -81,7 +81,7 @@ New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 Copy-Item -Force (Join-Path $SrcDir 'usage_widget.py') $Dest
 
 $venvPy = Join-Path $Dest 'venv\Scripts\python.exe'
-Say 'Creating virtualenv and installing pystray + Pillow'
+Say 'Creating virtualenv and installing dependencies'
 if (-not (Test-Path $venvPy)) { & $python -m venv (Join-Path $Dest 'venv') }
 & $venvPy -m pip install --quiet --upgrade pip
 & $venvPy -m pip install --quiet -r (Join-Path $SrcDir 'requirements.txt')
@@ -95,5 +95,5 @@ Say "Added to login startup: $Startup"
 
 Say 'Starting it now'
 Start-Process -FilePath $pythonw -ArgumentList $script -WorkingDirectory $Dest
-Say 'Done. Look for the gauge icon in the notification area (it may be under the ^ overflow arrow;'
-Say 'drag it onto the taskbar to keep it visible). It will start each time you sign in.'
+Say 'Done. Your usage is shown in an empty spot on the taskbar; click it for details.'
+Say 'It will start each time you sign in.'

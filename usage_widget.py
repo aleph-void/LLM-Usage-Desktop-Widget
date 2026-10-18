@@ -161,6 +161,15 @@ def load_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def save_config(cfg: dict) -> None:
+    path = config_dir() / "config.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _truthy(value) -> bool:
     return str(value or "").strip().lower() not in ("", "0", "false", "no", "off")
 
@@ -629,7 +638,6 @@ class Widget:
 
         self.tk = tk
         self.interval = max(MIN_INTERVAL, interval)
-        self.config_path = config_dir() / "config.json"
         self.cfg = self._load_config()
         self.data: list[ProviderUsage] = []
         self.fetching = False
@@ -684,11 +692,7 @@ class Widget:
         return load_config()
 
     def _save_config(self) -> None:
-        try:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            self.config_path.write_text(json.dumps(self.cfg, indent=2), encoding="utf-8")
-        except OSError:
-            pass
+        save_config(self.cfg)
 
     # -- window behaviour -----------------------------------------------------
 
@@ -1055,6 +1059,291 @@ def gauge_image(data: list[ProviderUsage], size: int = 64):
     return img
 
 
+class TaskbarStrip:
+    """Windows: "Claude 99%  Codex 16%" on the taskbar, just left of the notification area.
+
+    Windows has no API for putting text in the taskbar, so this is a small borderless
+    always-on-top window kept over the taskbar's empty space: next to the tray when there
+    is room, else in another gap (found with UI Automation), on two stacked lines if that
+    is what fits. It follows the taskbar's theme and layout, steps aside for full-screen
+    apps and an auto-hidden taskbar, and opens the tray menu when clicked. Runs on the
+    main thread.
+    """
+
+    TICK_MS = 500  # how often to re-check position and z-order
+    LAYOUT_MS = 2000  # how often to re-read where the taskbar's buttons are (a cross-process query)
+
+    def __init__(self, tray: "DesktopTray"):
+        import ctypes
+        import tkinter as tk
+        import tkinter.font as tkfont
+        from ctypes import wintypes
+
+        self.tk, self.ctypes, self.wintypes = tk, ctypes, wintypes
+        # Private DLL handles with full signatures: without them ctypes passes handles and
+        # HWND_TOPMOST (-1) as 32-bit ints, which 64-bit Windows rejects as invalid handles.
+        # (Private so they don't clash with the signatures pystray sets on ctypes.windll.)
+        W = wintypes
+        self.user32 = u = ctypes.WinDLL("user32")
+        self.gdi32 = g = ctypes.WinDLL("gdi32")
+        for fn, args, res in (
+            (u.FindWindowW, [W.LPCWSTR, W.LPCWSTR], W.HWND),
+            (u.FindWindowExW, [W.HWND, W.HWND, W.LPCWSTR, W.LPCWSTR], W.HWND),
+            (u.GetWindowRect, [W.HWND, ctypes.POINTER(W.RECT)], W.BOOL),
+            (u.IsWindowVisible, [W.HWND], W.BOOL),
+            (u.GetForegroundWindow, [], W.HWND),
+            (u.GetClassNameW, [W.HWND, W.LPWSTR, ctypes.c_int], ctypes.c_int),
+            (u.GetSystemMetrics, [ctypes.c_int], ctypes.c_int),
+            (u.GetDC, [W.HWND], W.HDC),
+            (u.ReleaseDC, [W.HWND, W.HDC], ctypes.c_int),
+            (u.SetWindowPos, [W.HWND, W.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.UINT],
+             W.BOOL),
+            (g.GetPixel, [W.HDC, ctypes.c_int, ctypes.c_int], W.DWORD),
+        ):
+            fn.argtypes, fn.restype = args, res
+        self.tray = tray
+        self.closing = threading.Event()
+        self.shown_key = None  # what is drawn now, to redraw only on change
+        self.placed = None
+        self.uia = self._init_uia()
+        self.spans, self.spans_at = None, 0.0
+
+        root = self.root = tk.Tk()
+        root.withdraw()
+        root.overrideredirect(True)  # no frame, no taskbar button
+        root.attributes("-topmost", True)
+        # One line when there is room; two smaller stacked lines when the taskbar is crowded.
+        self.fonts = {
+            "line": (tkfont.Font(family="Segoe UI", size=9), tkfont.Font(family="Segoe UI", size=9, weight="bold")),
+            "stacked": (tkfont.Font(family="Segoe UI", size=8),
+                        tkfont.Font(family="Segoe UI", size=8, weight="bold")),
+        }
+        self.pad = round(4 * float(root.tk.call("tk", "scaling")))
+        self.bg = "#1c1c1c"
+        self.frame = tk.Frame(root, bg=self.bg)
+        self.frame.pack(fill="both", expand=True)
+        self.inner = tk.Frame(self.frame, bg=self.bg)
+        self.inner.place(relx=0.5, rely=0.5, anchor="center")
+        root.update_idletasks()
+        self.hwnd = int(root.wm_frame(), 16)
+        self._tick()
+
+    @staticmethod
+    def _init_uia():
+        """UI Automation, which knows where the taskbar's buttons really are; None if unavailable."""
+        try:
+            import comtypes.client
+            comtypes.client.GetModule("UIAutomationCore.dll")
+            from comtypes.gen import UIAutomationClient as UIA
+            return UIA, comtypes.client.CreateObject(UIA.CUIAutomation, interface=UIA.IUIAutomation)
+        except Exception:
+            return None
+
+    # -- taskbar geometry ----------------------------------------------------
+
+    def _rect(self, hwnd):
+        r = self.wintypes.RECT()
+        if not hwnd or not self.user32.GetWindowRect(hwnd, self.ctypes.byref(r)):
+            return None
+        return r.left, r.top, r.right, r.bottom
+
+    def _placement(self):
+        """(taskbar window, taskbar rect, tray's left edge), or None when the strip should be hidden."""
+        u = self.user32
+        taskbar = u.FindWindowW("Shell_TrayWnd", None)
+        tb = self._rect(taskbar)
+        if not tb or not u.IsWindowVisible(taskbar):
+            return None
+        left, top, right, bottom = tb
+        if bottom - top > right - left:
+            return None  # vertical taskbar (Windows 10): no room for a line of text
+        screen_h = u.GetSystemMetrics(1)  # SM_CYSCREEN
+        if top >= screen_h - 4 or bottom <= 4:
+            return None  # auto-hidden
+        if self._fullscreen_app(taskbar):
+            return None
+        tray = self._rect(u.FindWindowExW(taskbar, None, "TrayNotifyWnd", None))
+        return taskbar, tb, tray[0] if tray else right - 300
+
+    # Legacy windows whose rectangles no longer match the Windows 11 taskbar's real layout.
+    LEGACY_CLASSES = ("MSTaskSwWClass", "MSTaskListWClass", "ReBarWindow32", "TrayNotifyWnd")
+
+    def _free_spans(self, taskbar, tb, tray_left) -> list[tuple[int, int]]:
+        """Empty stretches of the taskbar left of the tray, rightmost first.
+
+        Taskbar buttons are centered by default on Windows 11 and can reach the tray when
+        many apps are open, so the strip must not assume the space next to the tray is free.
+        """
+        left, top, right, bottom = tb
+        busy = []
+        if self.uia:
+            UIA, automation = self.uia
+            try:
+                found = automation.ElementFromHandle(taskbar).FindAll(
+                    UIA.TreeScope_Descendants, automation.CreateTrueCondition())
+                for i in range(found.Length):
+                    el = found.GetElement(i)
+                    r = el.CurrentBoundingRectangle
+                    if (r.left < tray_left and 2 * (r.bottom - r.top) > bottom - top
+                            and 0 < r.right - r.left < 0.9 * (right - left)
+                            and el.CurrentClassName not in self.LEGACY_CLASSES):
+                        busy.append((r.left, r.right))  # a button, the search box, the widgets...
+            except Exception:
+                busy = []
+        if not busy:
+            return [(left, tray_left)]  # unknown layout: use the space next to the tray
+        spans, x = [], left
+        for a, b in sorted(busy):
+            if a > x:
+                spans.append((x, a))
+            x = max(x, b)
+        if tray_left > x:
+            spans.append((x, tray_left))
+        return spans[::-1]
+
+    def _fullscreen_app(self, taskbar) -> bool:
+        u = self.user32
+        fg = u.GetForegroundWindow()
+        if not fg or fg in (taskbar, self.hwnd):
+            return False
+        buf = self.ctypes.create_unicode_buffer(64)
+        u.GetClassNameW(fg, buf, 64)
+        if buf.value in ("Progman", "WorkerW"):
+            return False  # the desktop
+        r = self._rect(fg)
+        return bool(r) and r[0] <= 0 and r[1] <= 0 and r[2] >= u.GetSystemMetrics(0) and r[3] >= u.GetSystemMetrics(1)
+
+    def _taskbar_color(self, x: int, y: int) -> str:
+        """The taskbar's own color just outside the strip, so the strip blends in."""
+        dc = self.user32.GetDC(None)
+        try:
+            c = self.gdi32.GetPixel(dc, x, y)
+        finally:
+            self.user32.ReleaseDC(None, dc)
+        if c == 0xFFFFFFFF:  # CLR_INVALID
+            return self.bg
+        return f"#{c & 0xFF:02x}{(c >> 8) & 0xFF:02x}{(c >> 16) & 0xFF:02x}"
+
+    # -- drawing -------------------------------------------------------------
+
+    def _parts(self) -> list[tuple[str, str, str]]:
+        """(provider, value, level) for each provider, e.g. ("Claude", "99%", "critical")."""
+        parts = []
+        for u in self.tray.data:
+            top = top_limit(u)
+            if top:
+                parts.append((u.name, f"{top.percent:.0f}%", top.level()))
+            elif u.summary:
+                parts.append((u.name, u.summary, "normal"))
+            elif u.error:
+                parts.append((u.name, "–", "muted"))
+        return parts or [("LLM usage", "…", "muted")]
+
+    def _width(self, parts, layout: str) -> int:
+        font, bold = self.fonts[layout]
+        pad = self.pad
+        if layout == "line":
+            return sum(font.measure(n) + pad // 2 + bold.measure(v) for n, v, _ in parts) + 2 * pad * len(parts)
+        return max(font.measure(n) for n, _, _ in parts) + pad + max(bold.measure(v) for _, v, _ in parts) + 2 * pad
+
+    def _choose(self, parts, spans, margin):
+        """(layout, right edge) of the first layout that fits, preferring the spot next to the tray."""
+        for a, b in spans:
+            for layout in ("line", "stacked"):
+                if b - a >= self._width(parts, layout) + 2 * margin:
+                    return layout, b - margin
+        return None
+
+    def _draw(self, bg: str, parts, layout: str):
+        key = (bg, tuple(parts), layout)
+        if key == self.shown_key:
+            return
+        self.shown_key, self.bg = key, bg
+        tk = self.tk
+        r, g, b = (int(bg[i:i + 2], 16) for i in (1, 3, 5))
+        light = 0.299 * r + 0.587 * g + 0.114 * b > 140
+        fg = "#000000" if light else "#ffffff"
+        colors = {"normal": fg, "muted": "#5f6068" if light else THEME["muted"],
+                  "warning": "#a86b00" if light else THEME["warning"],
+                  "critical": "#c62828" if light else THEME["critical"]}
+
+        for child in self.inner.winfo_children():
+            child.destroy()
+        self.frame.configure(bg=bg)
+        self.inner.configure(bg=bg)
+        font, bold = self.fonts[layout]
+        pad = self.pad
+        for i, (name, value, level) in enumerate(parts):
+            name_label = tk.Label(self.inner, text=name, font=font, fg=fg, bg=bg, padx=0, pady=0, bd=0)
+            value_label = tk.Label(self.inner, text=value, font=bold, fg=colors[level], bg=bg, padx=0, pady=0, bd=0)
+            if layout == "line":
+                name_label.pack(side="left", padx=(pad * 2 if i else pad, pad // 2))
+                value_label.pack(side="left", padx=(0, pad if i == len(parts) - 1 else 0))
+            else:
+                name_label.grid(row=i, column=0, sticky="w", padx=(pad, pad))
+                value_label.grid(row=i, column=1, sticky="e", padx=(0, pad))
+        for w in [self.frame, self.inner, *self.inner.winfo_children()]:
+            w.bind("<ButtonRelease-1>", self._click)
+            w.bind("<ButtonRelease-3>", self._click)
+
+    def _click(self, _e=None):
+        self.tray.open_menu()
+
+    def _tick(self):
+        if self.closing.is_set():
+            self.root.destroy()
+            return
+        try:
+            self._update()
+        except Exception:
+            pass  # never let a stray Win32 hiccup stop the loop
+        self.root.after(self.TICK_MS, self._tick)
+
+    def _hide(self):
+        if self.root.state() != "withdrawn":
+            self.root.withdraw()
+            self.placed = None
+
+    def _update(self):
+        place = self._placement() if self.tray.cfg.get("taskbar_text", True) else None
+        if place is None:
+            self._hide()
+            return
+        taskbar, tb, tray_left = place
+        top, bottom = tb[1], tb[3]
+        now = time.monotonic()
+        if self.spans is None or now - self.spans_at >= self.LAYOUT_MS / 1000:
+            self.spans, self.spans_at = self._free_spans(taskbar, tb, tray_left), now
+        margin = (bottom - top) // 8
+        parts = self._parts()
+        choice = self._choose(parts, self.spans, margin)
+        if choice is None:
+            self._hide()  # the taskbar is full; the tray icon still has the numbers
+            return
+        layout, edge = choice
+        # The pixel sampled is in the margin right of the strip, never under it or a button.
+        self._draw(self._taskbar_color(edge + margin // 2, top + 2), parts, layout)
+        self.root.update_idletasks()
+        w = self.inner.winfo_reqwidth()
+        geom = (w, bottom - top - 2 * margin, edge - w, top + margin)
+        if geom != self.placed:
+            self.root.geometry("%dx%d+%d+%d" % geom)
+            self.placed = geom
+        if self.root.state() == "withdrawn":
+            self.root.deiconify()
+        # Also place it with Win32: Tk resizes but doesn't always move a mapped borderless
+        # window, and clicking the taskbar raises it over other topmost windows.
+        HWND_TOPMOST, SWP_NOACTIVATE = -1, 0x0010
+        w, h, x, y = geom
+        self.user32.SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE)
+
+    def close(self):
+        self.closing.set()  # picked up on the Tk thread
+
+    def run(self):
+        self.root.mainloop()
+
+
 class DesktopTray:
     def __init__(self, interval: int):
         import pystray
@@ -1064,12 +1353,55 @@ class DesktopTray:
         self.data: list[ProviderUsage] = []
         self.last_fetch = 0.0
         self.wake = threading.Event()
+        self.cfg = load_config()
+        self.strip = None
         self.icon = pystray.Icon(APP_NAME, gauge_image([]), "LLM Usage", menu=self._menu())
+        if sys.platform == "win32":
+            self._open_menu_on_any_click()
+            try:
+                self.strip = TaskbarStrip(self)
+            except Exception as e:  # e.g. Python built without tkinter
+                warn(f"Taskbar text unavailable ({e}); showing only the tray icon.")
         if sys.platform == "darwin":
             # Menu-bar only: no Dock icon or app menu.
             import AppKit
             AppKit.NSApplication.sharedApplication().setActivationPolicy_(
                 AppKit.NSApplicationActivationPolicyAccessory)
+
+    def _open_menu_on_any_click(self):
+        # pystray opens the menu only on right-click, and rebuilds it on whichever thread
+        # sets icon.menu, which can destroy it while it is open. Instead open it on any
+        # click, rebuilding it first on the icon's own thread so the countdowns are current.
+        from pystray._util import win32
+
+        on_notify = self.icon._message_handlers[win32.WM_NOTIFY]
+
+        def handler(wparam, lparam):
+            if lparam in (win32.WM_LBUTTONUP, win32.WM_RBUTTONUP):
+                self.icon.menu = self._menu()
+                lparam = win32.WM_RBUTTONUP
+            return on_notify(wparam, lparam)
+
+        self.icon._message_handlers[win32.WM_NOTIFY] = handler
+        self._win32 = win32
+
+    def open_menu(self):
+        """Show the tray menu at the mouse pointer (Windows; any thread)."""
+        hwnd = getattr(self.icon, "_hwnd", None)
+        if hwnd:
+            self._win32.PostMessage(hwnd, self._win32.WM_NOTIFY, 0, self._win32.WM_LBUTTONUP)
+
+    def _toggle_taskbar_text(self):
+        cfg = load_config()  # re-read so hand edits (e.g. the bedrock section) are kept
+        cfg["taskbar_text"] = not self.cfg.get("taskbar_text", True)
+        save_config(cfg)
+        self.cfg = cfg
+
+    def _quit(self):
+        if self.strip:
+            self.strip.close()  # run() stops the icon once the strip's loop has ended
+        else:
+            self.icon.stop()
 
     def _on_main(self, fn):
         # AppKit objects may only be touched from the main thread.
@@ -1105,14 +1437,18 @@ class DesktopTray:
         items.append(item("Refresh now", lambda: self.wake.set()))
         for name, url in usage_pages(self.data).items():
             items.append(item(f"Open {name} usage page", (lambda u: lambda: webbrowser.open(u))(url)))
-        items.append(item("Quit", lambda: self.icon.stop()))
+        if self.strip:
+            items.append(item("Show usage on the taskbar", lambda: self._toggle_taskbar_text(),
+                              checked=lambda _i: self.cfg.get("taskbar_text", True)))
+        items.append(item("Quit", lambda: self._quit()))
         return self.pystray.Menu(*items)
 
     def _render(self):
         text = summary_text(self.data)
         self.icon.icon = gauge_image(self.data)
         self.icon.title = text or "LLM Usage"  # tooltip
-        self.icon.menu = self._menu()
+        if sys.platform != "win32":  # on Windows the menu is rebuilt when it is opened
+            self.icon.menu = self._menu()
         if sys.platform == "darwin":
             # Show the summary next to the icon, like the Linux top bar.
             try:
@@ -1144,7 +1480,14 @@ class DesktopTray:
             self.wake.wait(30)
 
     def run(self):
-        self.icon.run(setup=lambda icon: threading.Thread(target=self._loop, args=(icon,), daemon=True).start())
+        setup = lambda icon: threading.Thread(target=self._loop, args=(icon,), daemon=True).start()  # noqa: E731
+        if self.strip:
+            # Tk needs the main thread, so the icon runs its message loop on its own thread.
+            self.icon.run_detached(setup)
+            self.strip.run()
+            self.icon.stop()
+        else:
+            self.icon.run(setup=setup)
 
 
 def warn(msg: str) -> None:
@@ -1215,6 +1558,13 @@ def main() -> int:
                 return 1
             warn(msg + "\nFalling back to the floating widget.")
         else:
+            if sys.platform == "win32":
+                # Crisp tray icon and taskbar text on scaled displays; must precede any window.
+                try:
+                    import ctypes
+                    ctypes.windll.shcore.SetProcessDpiAwareness(1)  # system DPI aware
+                except (AttributeError, OSError):
+                    pass
             DesktopTray(args.interval).run()
             return 0
 

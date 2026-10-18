@@ -9,7 +9,7 @@ limits, and time until each resets) where your system status icons live:
 |---|---|---|
 | Linux | Top bar / panel, next to Wi-Fi and sound (AppIndicator) | Icon + `Claude 99%  Codex 13%`; click for details |
 | macOS | Menu bar, top right | Gauge icon + `Claude 99%  Codex 13%`; click for details |
-| Windows | Notification area, next to Wi-Fi and sound | Two-bar gauge icon (Claude / Codex); hover for the numbers, click for details |
+| Windows | An empty spot on the taskbar, plus a tray icon | `Claude 99%  Codex 13%` on the taskbar and a two-bar gauge icon; click either for details |
 
 The dropdown lists every limit with its percentage and reset countdown, plus *Refresh now*,
 links to each provider's usage page, and *Quit*. Bars and icons turn amber at 75% and red at 90%
@@ -77,7 +77,12 @@ On Debian/Ubuntu: `sudo apt remove llm-usage-widget`.
   own virtualenv and adds Start Menu and Startup shortcuts.
 
 On macOS the first run may ask for Keychain access to `Claude Code-credentials`; choose *Always Allow*.
-Windows may tuck new tray icons into the overflow (`^`) menu; drag it onto the taskbar to keep it visible.
+On Windows the numbers are drawn on the taskbar itself: left of the `^` arrow when there is room, otherwise in
+the next empty gap (with centered taskbar buttons, usually left of Start), on two smaller lines if that is what
+fits. It never covers taskbar buttons; if the taskbar is completely full it hides until there is room. Windows has
+no API for text in the taskbar, so this is a small always-on-top window that follows the taskbar and steps
+aside for full-screen apps and an auto-hidden or vertical taskbar. Turn it off with *Show usage on the taskbar*
+in the menu. The tray icon may be tucked into the overflow (`^`) menu; drag it onto the taskbar to keep it visible.
 
 ### Running from source
 

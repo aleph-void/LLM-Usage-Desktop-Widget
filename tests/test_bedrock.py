@@ -100,7 +100,7 @@ def test_cached_computes_once_and_persists(monkeypatch):
     assert w._cached("k", 100, compute) == {"n": 1}
     assert w._cached("k", 100, compute) == {"n": 1}
     assert len(calls) == 1
-    stored = json.loads((w.config_dir() / "bedrock-cache.json").read_text())
+    stored = json.loads((w.config_dir() / "cloud-cache.json").read_text())
     assert stored["k"]["value"] == {"n": 1}
 
 
@@ -129,12 +129,12 @@ def test_cached_prunes_week_old_entries(monkeypatch):
     w._cached("ancient", 60, lambda: 1)
     clock[0] = 8 * 86400
     w._cached("fresh", 60, lambda: 2)
-    stored = json.loads((w.config_dir() / "bedrock-cache.json").read_text())
+    stored = json.loads((w.config_dir() / "cloud-cache.json").read_text())
     assert set(stored) == {"fresh"}
 
 
 def test_cached_survives_corrupt_file():
-    path = w.config_dir() / "bedrock-cache.json"
+    path = w.config_dir() / "cloud-cache.json"
     path.parent.mkdir(parents=True)
     path.write_text("{corrupt")
     assert w._cached("k", 60, lambda: 7) == 7

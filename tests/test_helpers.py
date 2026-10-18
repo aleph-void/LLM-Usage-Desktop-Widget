@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import ssl
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -299,3 +300,167 @@ def test_ssl_context_prefers_truststore(monkeypatch):
     monkeypatch.setitem(sys.modules, "truststore", fake)
     assert w._ssl_context() == "truststore-ctx"
     assert made == [ssl.PROTOCOL_TLS_CLIENT]
+
+
+# -- http_json: POST bodies and cloud-style errors -------------------------------
+
+def test_http_json_posts_json(monkeypatch):
+    seen = {}
+
+    def urlopen(req, timeout, context):
+        seen.update(method=req.get_method(), data=req.data, headers=dict(req.header_items()))
+        return FakeResponse(b'{"ok": 1}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert w.http_json("https://example.test", {}, body={"q": "x"}) == {"ok": 1}
+    assert seen["method"] == "POST"
+    assert json.loads(seen["data"]) == {"q": "x"}
+    assert seen["headers"]["Content-type"] == "application/json"
+
+
+def test_http_json_posts_form(monkeypatch):
+    seen = {}
+
+    def urlopen(req, timeout, context):
+        seen.update(method=req.get_method(), data=req.data, headers=dict(req.header_items()))
+        return FakeResponse(b"{}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    w.http_json("https://example.test", {}, form={"grant_type": "refresh_token", "a": "b c"})
+    assert seen["method"] == "POST"
+    assert seen["data"] == b"grant_type=refresh_token&a=b+c"
+    assert seen["headers"]["Content-type"] == "application/x-www-form-urlencoded"
+
+
+def http_error(code, body: bytes):
+    def urlopen(req, timeout, context):
+        raise urllib.error.HTTPError(req.full_url, code, "err", {}, io.BytesIO(body))
+
+    return urlopen
+
+
+@pytest.mark.parametrize("code", [401, 403, 404, 500])
+def test_http_json_without_auth_errors_raises_status(monkeypatch, code):
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        http_error(code, b'{"error": {"code": 7, "message": "Permission  denied\\n on x"}}'))
+    with pytest.raises(w.HTTPStatusError) as info:
+        w.http_json("https://example.test", {}, auth_errors=False)
+    assert info.value.code == code
+    assert str(info.value) == f"HTTP {code}: Permission denied on x"
+    assert isinstance(info.value, RuntimeError)  # callers catching RuntimeError still see it
+
+
+@pytest.mark.parametrize("body, detail", [
+    (b'{"error": {"code": "AuthorizationFailed"}}', "AuthorizationFailed"),
+    (b'{"error": "invalid_grant"}', "invalid_grant"),
+    (b'{"error": null}', ""),
+    (b'{"other": 1}', ""),
+    (b"[1]", ""),
+    (b"<html>oops</html>", ""),
+    (b"", ""),
+])
+def test_error_detail(monkeypatch, body, detail):
+    monkeypatch.setattr(urllib.request, "urlopen", http_error(400, body))
+    with pytest.raises(w.HTTPStatusError) as info:
+        w.http_json("https://example.test", {}, auth_errors=False)
+    assert str(info.value) == "HTTP 400" + (f": {detail}" if detail else "")
+
+
+def test_error_detail_is_shortened(monkeypatch):
+    monkeypatch.setattr(urllib.request, "urlopen", http_error(400, json.dumps({"error": {"message": "x" * 200}}).encode()))
+    with pytest.raises(w.HTTPStatusError) as info:
+        w.http_json("https://example.test", {}, auth_errors=False)
+    detail = str(info.value).split(": ", 1)[1]
+    assert len(detail) == 90 and detail.endswith("…")
+
+
+# -- find_cli / run_cli ----------------------------------------------------------
+
+REAL_RUN_CLI = w.run_cli  # conftest stubs it out for every test
+
+
+def make_tool(directory, name):
+    directory.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        path = directory / f"{name}.bat"
+        path.write_text("@echo off\r\necho hi\r\n")
+    else:
+        path = directory / name
+        path.write_text("#!/bin/sh\necho hi\n")
+        path.chmod(0o755)
+    return path
+
+
+def test_find_cli_on_path(monkeypatch, tmp_path):
+    tool = make_tool(tmp_path / "bin", "fakecli")
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    assert w.find_cli("fakecli").lower() == str(tool).lower()
+
+
+def test_find_cli_in_install_folders(monkeypatch, tmp_path, home):
+    tool = make_tool(home / "google-cloud-sdk" / "bin", "fakegcloud")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert w.find_cli("fakegcloud").lower() == str(tool).lower()
+
+
+def test_find_cli_windows_folders(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    searched = []
+
+    def which(name, path=None):
+        searched.append(path)
+        return None
+
+    monkeypatch.setattr(w.shutil, "which", which)
+    assert w.find_cli("az") is None
+    assert str(tmp_path / "local" / "Microsoft SDKs" / "Azure" / "CLI2" / "wbin") in searched[1]
+
+
+def test_find_cli_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert w.find_cli("definitely-not-installed-xyz") is None
+
+
+def test_run_cli(monkeypatch):
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="token\n")
+
+    monkeypatch.setattr(w, "find_cli", lambda name: f"/opt/{name}")
+    monkeypatch.setattr(w.subprocess, "run", run)
+    assert REAL_RUN_CLI(["gcloud", "auth", "print-access-token"]) == "token\n"
+    cmd, kwargs = calls[0]
+    assert cmd == ["/opt/gcloud", "auth", "print-access-token"]
+    assert kwargs["capture_output"] and kwargs["timeout"] == 30
+
+
+@pytest.mark.parametrize("outcome", [
+    subprocess.CompletedProcess([], 1, stdout="partial"), FileNotFoundError("x"), subprocess.TimeoutExpired("x", 1)])
+def test_run_cli_failures(monkeypatch, outcome):
+    def run(cmd, **kwargs):
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(w, "find_cli", lambda name: "/opt/x")
+    monkeypatch.setattr(w.subprocess, "run", run)
+    assert REAL_RUN_CLI(["x"]) is None
+
+
+def test_run_cli_missing_tool(monkeypatch):
+    monkeypatch.setattr(w, "find_cli", lambda name: None)
+    monkeypatch.setattr(w.subprocess, "run", lambda *a, **k: pytest.fail("ran a missing tool"))
+    assert REAL_RUN_CLI(["gcloud"]) is None
+
+
+def test_rfc3339():
+    assert w._rfc3339(datetime(2025, 1, 2, 3, 4, 5, 999, tzinfo=timezone(timedelta(hours=2)))) == "2025-01-02T01:04:05Z"
+
+
+def test_usage_pages_hide_unused_clouds():
+    assert set(w.usage_pages([])) == {"Claude", "Codex"}
+    assert set(w.usage_pages([w.ProviderUsage("Vertex"), w.ProviderUsage("Azure")])) == {"Vertex", "Azure"}

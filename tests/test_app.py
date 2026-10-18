@@ -42,7 +42,7 @@ def test_fetch_all_handles_each_outcome(monkeypatch):
 
 
 def test_fetch_all_with_nothing_set_up():
-    # A clean machine: Claude and Codex ask for a login, Bedrock stays out.
+    # A clean machine: Claude and Codex ask for a login, the clouds stay out.
     results = w.fetch_all()
     assert [u.name for u in results] == ["Claude", "Codex"]
     assert "not logged in" in results[0].error
@@ -50,7 +50,7 @@ def test_fetch_all_with_nothing_set_up():
 
 
 def test_providers_order():
-    assert [name for name, _ in w.PROVIDERS] == ["Claude", "Codex", "Bedrock"]
+    assert [name for name, _ in w.PROVIDERS] == ["Claude", "Codex", "Bedrock", "Vertex", "Azure"]
 
 
 # -- print_once ----------------------------------------------------------------

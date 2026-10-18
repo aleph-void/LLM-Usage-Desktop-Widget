@@ -21,6 +21,9 @@ APP_ENV = (
     "CLAUDE_CONFIG_DIR", "CODEX_HOME", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BASE_URL",
     "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
+    "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT",
+    "GCLOUD_PROJECT", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG", "AZURE_SUBSCRIPTION_ID",
+    "ANTHROPIC_FOUNDRY_BASE_URL", "ANTHROPIC_FOUNDRY_RESOURCE",
 )
 
 
@@ -43,6 +46,11 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(w, "_SSL_CONTEXT", None)
+    monkeypatch.setattr(w, "_TOKENS", {})
+    # No real gcloud / az, and no google-auth or azure-identity picking up real credentials.
+    monkeypatch.setattr(w, "run_cli", lambda args, timeout=30: None)
+    for mod in ("google.auth", "google.auth.transport.requests", "azure.identity"):
+        monkeypatch.setitem(sys.modules, mod, None)
 
     def no_network(*args, **kwargs):
         raise AssertionError("tests must not touch the network")
@@ -64,19 +72,36 @@ def home(isolated) -> Path:
 
 @pytest.fixture
 def fake_http(monkeypatch):
-    """Replace http_json with canned responses keyed by URL; records each call."""
+    """Replace http_json with canned responses; records each call.
+
+    A response is looked up by exact URL, else by the longest matching URL prefix. It can be a value,
+    an exception to raise, a callable(url, kwargs) or a list consumed one call at a time.
+    """
 
     class FakeHttp:
         def __init__(self):
             self.responses: dict[str, object] = {}
             self.calls: list[tuple[str, dict]] = []
+            self.kwargs: list[dict] = []
 
-        def __call__(self, url, headers, timeout=20):
+        def __call__(self, url, headers, timeout=20, **kwargs):
             self.calls.append((url, headers))
-            response = self.responses[url]
+            self.kwargs.append(kwargs)
+            key = url if url in self.responses else max(
+                (k for k in self.responses if url.startswith(k)), key=len, default=None)
+            if key is None:
+                raise AssertionError(f"unexpected request: {url}")
+            response = self.responses[key]
+            if isinstance(response, list):
+                response = response.pop(0)
+            if callable(response) and not isinstance(response, BaseException):
+                response = response(url, kwargs)
             if isinstance(response, BaseException):
                 raise response
             return response
+
+        def urls(self, prefix=""):
+            return [url for url, _ in self.calls if url.startswith(prefix)]
 
     fake = FakeHttp()
     monkeypatch.setattr(w, "http_json", fake)

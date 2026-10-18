@@ -171,3 +171,40 @@ def test_credits_hidden(logged_in, fake_http, credits):
 def test_malformed_rate_limits_are_skipped(logged_in, fake_http, rate_limit):
     fake_http.responses[USAGE_URL] = {"rate_limit": rate_limit, "additional_rate_limits": {"not": "a list"}}
     assert w.fetch_codex().limits == []
+
+
+CLOUD_CONFIG = """
+base_url = "https://api.openai.com/v1"
+base_url = "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1"
+base_url = "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/endpoints/openapi"
+base_url = "https://my-res.openai.azure.com/openai/v1"
+base_url = "https://Other-Res.cognitiveservices.azure.com/openai"
+base_url = "https://found-1.services.ai.azure.com/models"
+base_url = "https://evil.example.com/?x=openai.azure.com"
+"""
+
+
+def test_codex_url_classifiers(home):
+    write_config(home, CLOUD_CONFIG)
+    assert len(w.codex_base_urls()) == 7
+    assert w.codex_bedrock_urls() == ["https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1"]
+    assert w.codex_vertex_urls() == [
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/endpoints/openapi"]
+    assert w.codex_azure_urls() == ["https://my-res.openai.azure.com/openai/v1",
+                                    "https://Other-Res.cognitiveservices.azure.com/openai",
+                                    "https://found-1.services.ai.azure.com/models"]
+    assert len(w.codex_cloud_urls()) == 5
+
+
+@pytest.mark.parametrize("url", ["https://my-res.openai.azure.com/openai/v1",
+                                 "https://us-central1-aiplatform.googleapis.com/v1/projects/p/x"])
+def test_cloud_user_without_login_is_left_out(home, url):
+    write_config(home, f'base_url = "{url}"\n')
+    with pytest.raises(w.NotUsed):
+        w._codex_tokens()
+
+
+def test_plain_openai_base_url_still_needs_login(home):
+    write_config(home, 'base_url = "https://api.openai.com/v1"\n')
+    with pytest.raises(w.AuthError):
+        w._codex_tokens()

@@ -244,3 +244,21 @@ def test_http_auth_error_propagates(logged_in, fake_http):
     fake_http.responses[USAGE_URL] = w.AuthError("HTTP 401: login rejected")
     with pytest.raises(w.AuthError):
         w.fetch_claude()
+
+
+@pytest.mark.parametrize("env", [{"CLAUDE_CODE_USE_VERTEX": "1"}, {"CLAUDE_CODE_USE_FOUNDRY": "true"}])
+def test_cloud_user_without_login_is_left_out(home, env):
+    write_settings(home, env)
+    with pytest.raises(w.NotUsed):
+        w._claude_credentials()
+
+
+@pytest.mark.parametrize("fn, var", [(w.claude_uses_vertex, "CLAUDE_CODE_USE_VERTEX"),
+                                     (w.claude_uses_foundry, "CLAUDE_CODE_USE_FOUNDRY")])
+def test_claude_uses_vertex_and_foundry(monkeypatch, fn, var):
+    assert fn({}) is False
+    assert fn({var: "0"}) is False
+    assert fn({var: "1"}) is True
+    assert fn() is False
+    monkeypatch.setenv(var, "yes")
+    assert fn() is True

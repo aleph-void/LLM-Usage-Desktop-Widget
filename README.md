@@ -49,13 +49,15 @@ Download from the GitHub release (built by `.github/workflows/build-installers.y
 | macOS | `LLM-Usage-Widget-<ver>-macos-arm64.pkg` (Apple Silicon) or `-x86_64.pkg` (Intel) | Installs `/Applications/LLM Usage.app` plus a login LaunchAgent. Release builds are signed with a Developer ID and notarized by Apple. |
 | Windows | `LLM-Usage-Widget-<ver>-windows-setup.exe` | Per-user install, no admin rights needed. "Start automatically when I sign in" is ticked by default. The build is unsigned, so SmartScreen may warn: click **More info → Run anyway**. Uninstall from *Settings → Apps*, the *Uninstall LLM Usage Widget* Start Menu entry, or by running `LLM-Usage-Widget-<ver>-windows-uninstall.exe` from the same release (add `/VERYSILENT` to skip the prompts). Settings in `%APPDATA%\llm-usage-widget` are kept. |
 
-To uninstall the macOS package:
+To uninstall the macOS package, open `LLM-Usage-Widget-<ver>-macos-uninstall.pkg` from the same release
+(it asks for an administrator password), or run the copy of the uninstaller inside the app:
 
 ```sh
-launchctl bootout gui/$(id -u)/local.llm-usage-widget.app
-sudo rm -rf "/Applications/LLM Usage.app" /Library/LaunchAgents/local.llm-usage-widget.app.plist
-sudo pkgutil --forget local.llm-usage-widget
+sudo "/Applications/LLM Usage.app/Contents/Resources/uninstall.sh"
 ```
+
+Either one stops the widget for every logged-in user and removes the app, its LaunchAgent and the
+package receipt. Settings in `~/Library/Application Support/llm-usage-widget` are left in place.
 
 On Debian/Ubuntu: `sudo apt remove llm-usage-widget`.
 

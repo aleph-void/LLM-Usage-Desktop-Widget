@@ -125,22 +125,23 @@ jobs:
           AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
         run: |
           set -euo pipefail
-          pkg=$(ls dist/*.pkg)
           key="$RUNNER_TEMP/AuthKey.p8"
           echo "$AC_API_KEY_P8_BASE64" | base64 --decode > "$key"
           auth=(--key "$key" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER_ID")
-          # `submit --wait` exits 0 even when the status is Invalid, so check it and print the log.
-          xcrun notarytool submit "$pkg" "${auth[@]}" --wait --timeout 45m --output-format json > "$RUNNER_TEMP/notary.json" || true
-          cat "$RUNNER_TEMP/notary.json"
-          if [ "$(jq -r '.status // empty' "$RUNNER_TEMP/notary.json")" != "Accepted" ]; then
-            id=$(jq -r '.id // empty' "$RUNNER_TEMP/notary.json")
-            [ -z "$id" ] || xcrun notarytool log "$id" "${auth[@]}" || true
-            exit 1
-          fi
+          for pkg in dist/*.pkg; do
+            # `submit --wait` exits 0 even when the status is Invalid, so check it and print the log.
+            xcrun notarytool submit "$pkg" "${auth[@]}" --wait --timeout 45m --output-format json > "$RUNNER_TEMP/notary.json" || true
+            cat "$RUNNER_TEMP/notary.json"
+            if [ "$(jq -r '.status // empty' "$RUNNER_TEMP/notary.json")" != "Accepted" ]; then
+              id=$(jq -r '.id // empty' "$RUNNER_TEMP/notary.json")
+              [ -z "$id" ] || xcrun notarytool log "$id" "${auth[@]}" || true
+              exit 1
+            fi
+            xcrun stapler staple "$pkg"
+            xcrun stapler validate "$pkg"
+            spctl -a -vvv -t install "$pkg"
+          done
           rm -f "$key"
-          xcrun stapler staple "$pkg"
-          xcrun stapler validate "$pkg"
-          spctl -a -vvv -t install "$pkg"
       - uses: actions/upload-artifact@v7
         with:
           name: macos-pkg-${{ matrix.runner }}

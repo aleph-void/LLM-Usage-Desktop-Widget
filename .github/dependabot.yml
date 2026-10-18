@@ -1,0 +1,11 @@
+# Opens PRs when the GitHub Actions used in .github/workflows release new versions
+# (e.g. when they move to a newer Node runtime).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

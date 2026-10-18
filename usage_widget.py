@@ -130,7 +130,7 @@ def parse_time(value) -> datetime | None:
         if isinstance(value, (int, float)):
             return datetime.fromtimestamp(float(value), tz=timezone.utc)
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (ValueError, OSError):
+    except (ValueError, OSError, OverflowError):
         return None
 
 

@@ -24,3 +24,7 @@ assets/icon.ico
 *.swp
 .DS_Store
 Thumbs.db
+
+# Test coverage
+.coverage
+.pytest_cache/

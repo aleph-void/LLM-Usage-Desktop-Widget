@@ -1,0 +1,75 @@
+name: Build installers
+
+# Push a tag like v1.0.0 (matching __version__ in usage_widget.py) to build all
+# installers and attach them to a GitHub release. Run manually to just build them.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: packaging/linux/build-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: dist/*.deb
+
+  macos:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest       # Apple Silicon
+          - runner: macos-15-intel     # Intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install pyinstaller -r requirements.txt
+      - run: packaging/macos/build-pkg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-pkg-${{ matrix.runner }}
+          path: dist/*.pkg
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pyinstaller -r requirements.txt
+      - run: packaging/windows/build.ps1
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup
+          path: dist/*-windows-setup.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches __version__
+        run: |
+          v=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' usage_widget.py)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME does not match __version__ $v"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

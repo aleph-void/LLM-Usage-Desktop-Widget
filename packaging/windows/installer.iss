@@ -7,13 +7,15 @@
 #endif
 #define AppName "LLM Usage Widget"
 #define AppExe "LLMUsageWidget.exe"
+; Shown as the publisher in Settings > Apps; matches the code-signing certificate's name.
+#define AppPublisher "Aleph Void LLC"
 
 [Setup]
 AppId={{9B3C4E2A-6F1D-4A8B-9C7E-2D5F0A1B3C4D}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
-AppPublisher={#AppName}
+AppPublisher={#AppPublisher}
 DefaultDirName={localappdata}\Programs\{#AppName}
 DisableProgramGroupPage=yes
 DisableDirPage=auto

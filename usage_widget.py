@@ -42,6 +42,8 @@ __version__ = "0.0.2"
 
 APP_NAME = "llm-usage-widget"
 USER_AGENT = f"llm-usage-widget/{__version__}"
+REPO_URL = "https://github.com/aleph-void/LLM-Usage-Desktop-Widget"
+LLC_URL = "https://alephvoid.com"
 DEFAULT_INTERVAL = 180  # seconds between polls; the endpoints are not meant to be hammered
 MIN_INTERVAL = 60
 
@@ -697,6 +699,11 @@ class Widget:
         self.topmost_var = tk.BooleanVar(value=bool(self.cfg.get("topmost", True)))
         self.menu.add_command(label="Refresh now", command=self.refresh)
         self.menu.add_checkbutton(label="Always on top", variable=self.topmost_var, command=self._toggle_topmost)
+        about = tk.Menu(self.menu, tearoff=0)
+        about.add_command(label=f"LLM Usage Widget — Version {__version__}", state="disabled")
+        about.add_command(label=f"Source: {REPO_URL}", command=lambda: webbrowser.open(REPO_URL))
+        about.add_command(label=f"Aleph Void LLC: {LLC_URL}", command=lambda: webbrowser.open(LLC_URL))
+        self.menu.add_cascade(label="About", menu=about)
         self.menu.add_separator()
         self.menu.add_command(label="Quit", command=self.quit)
 
@@ -1015,6 +1022,17 @@ class Tray:
             item = Gtk.MenuItem(label=f"Open {name} usage page")
             item.connect("activate", lambda _w, u=url: Gtk.show_uri_on_window(None, u, Gtk.get_current_event_time()))
             menu.append(item)
+        about = Gtk.Menu()
+        version = Gtk.MenuItem(label=f"LLM Usage Widget — Version {__version__}")
+        version.set_sensitive(False)
+        about.append(version)
+        for text, url in ((f"Source: {REPO_URL}", REPO_URL), (f"Aleph Void LLC: {LLC_URL}", LLC_URL)):
+            item = Gtk.MenuItem(label=text)
+            item.connect("activate", lambda _w, u=url: Gtk.show_uri_on_window(None, u, Gtk.get_current_event_time()))
+            about.append(item)
+        about_item = Gtk.MenuItem(label="About")
+        about_item.set_submenu(about)
+        menu.append(about_item)
         quit_item = Gtk.MenuItem(label="Quit")
         quit_item.connect("activate", lambda *_: Gtk.main_quit())
         menu.append(quit_item)
@@ -1458,6 +1476,11 @@ class DesktopTray:
         if self.strip:
             items.append(item("Show usage on the taskbar", lambda: self._toggle_taskbar_text(),
                               checked=lambda _i: self.cfg.get("taskbar_text", True)))
+        items.append(item("About", self.pystray.Menu(
+            item(f"LLM Usage Widget — Version {__version__}", None, enabled=False),
+            item(f"Source: {REPO_URL}", lambda: webbrowser.open(REPO_URL)),
+            item(f"Aleph Void LLC: {LLC_URL}", lambda: webbrowser.open(LLC_URL)),
+        )))
         items.append(item("Quit", lambda: self._quit()))
         return self.pystray.Menu(*items)
 

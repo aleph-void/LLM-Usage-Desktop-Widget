@@ -44,7 +44,7 @@ Download from the GitHub release (built by `.github/workflows/build-installers.y
 | OS | File | Notes |
 |---|---|---|
 | Linux (Debian/Ubuntu) | `llm-usage-widget_<ver>_all.deb` | `sudo apt install ./llm-usage-widget_*.deb`, then log out and back in (or run `llm-usage-widget`). Starts at login for every user via `/etc/xdg/autostart`. |
-| macOS | `LLM-Usage-Widget-<ver>-macos-arm64.pkg` (Apple Silicon) or `-x86_64.pkg` (Intel) | Installs `/Applications/LLM Usage.app` plus a login LaunchAgent. The build is unsigned: if macOS blocks it, open **System Settings → Privacy & Security** and click **Open Anyway**. |
+| macOS | `LLM-Usage-Widget-<ver>-macos-arm64.pkg` (Apple Silicon) or `-x86_64.pkg` (Intel) | Installs `/Applications/LLM Usage.app` plus a login LaunchAgent. Release builds are signed with a Developer ID and notarized by Apple. |
 | Windows | `LLM-Usage-Widget-<ver>-windows-setup.exe` | Per-user install, no admin rights needed. "Start automatically when I sign in" is ticked by default. The build is unsigned, so SmartScreen may warn: click **More info → Run anyway**. Uninstall from *Settings → Apps*. |
 
 To uninstall the macOS package:
@@ -136,8 +136,23 @@ packaging/macos/build-pkg.sh                                   # macOS → dist/
 powershell -File packaging\windows\build.ps1                   # Windows → dist\*-setup.exe (needs Inno Setup 6)
 ```
 
-To sign the macOS build, set `CODESIGN_IDENTITY` (a "Developer ID Application" identity) and
-`INSTALLER_SIGN_IDENTITY` ("Developer ID Installer"). Notarization is not automated.
+To sign the macOS build locally, set `CODESIGN_IDENTITY` (a "Developer ID Application" identity) and
+`INSTALLER_SIGN_IDENTITY` ("Developer ID Installer"). The app is signed with the hardened runtime and a
+secure timestamp, which is what notarization requires. Then notarize and staple the pkg:
+
+```sh
+xcrun notarytool submit dist/*.pkg --keychain-profile <profile> --wait
+xcrun stapler staple dist/*.pkg
+```
+
+In CI, the macOS job signs, notarizes and staples the pkg when these repository secrets are set. A tag
+release fails without them:
+
+| Secret | Contents |
+| --- | --- |
+| `MAC_CERT_P12_BASE64` / `MAC_CERT_PASSWORD` | The Developer ID Application certificate and private key, as a base64-encoded `.p12`, and its export password |
+| `MAC_INSTALLER_CERT_P12_BASE64` / `MAC_INSTALLER_CERT_PASSWORD` | The same for the Developer ID Installer certificate |
+| `AC_API_KEY_P8_BASE64` / `AC_API_KEY_ID` / `AC_API_ISSUER_ID` | An App Store Connect API key (the base64-encoded `.p8`), its key ID and issuer ID, used by `notarytool` |
 
 ## Amazon Bedrock (and bedrock-mantle)
 

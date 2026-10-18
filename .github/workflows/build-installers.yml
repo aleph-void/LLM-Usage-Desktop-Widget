@@ -53,12 +53,59 @@ jobs:
           - runner: macos-latest       # Apple Silicon
           - runner: macos-15-intel     # Intel
     runs-on: ${{ matrix.runner }}
+    # Developer ID signing + notarization run when these secrets are set (same names as the
+    # other Aleph Void repos). Without them the build is unsigned, which a tag release refuses.
+    env:
+      MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
+      MAC_INSTALLER_CERT_P12_BASE64: ${{ secrets.MAC_INSTALLER_CERT_P12_BASE64 }}
+      AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python3 -m pip install pyinstaller -r requirements.txt
+      - name: Require signing secrets for a release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          missing=""
+          for s in MAC_CERT_P12_BASE64 MAC_INSTALLER_CERT_P12_BASE64 AC_API_KEY_P8_BASE64; do
+            [ -n "${!s}" ] || missing="$missing $s"
+          done
+          [ -z "$missing" ] || { echo "::error::Missing macOS signing secret(s):$missing; refusing to release an unsigned .pkg"; exit 1; }
+      - name: Import Developer ID certificates
+        if: env.MAC_CERT_P12_BASE64 != '' && env.MAC_INSTALLER_CERT_P12_BASE64 != ''
+        env:
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          MAC_INSTALLER_CERT_PASSWORD: ${{ secrets.MAC_INSTALLER_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Ephemeral keychain with a random password; it goes away with the runner.
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KCPW="$(openssl rand -base64 24)"
+          echo "::add-mask::$KCPW"
+          security create-keychain -p "$KCPW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KCPW" "$KEYCHAIN"
+          echo "$MAC_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/app.p12"
+          echo "$MAC_INSTALLER_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/installer.p12"
+          security import "$RUNNER_TEMP/app.p12" -P "$MAC_CERT_PASSWORD" -k "$KEYCHAIN" -A -T /usr/bin/codesign
+          security import "$RUNNER_TEMP/installer.p12" -P "$MAC_INSTALLER_CERT_PASSWORD" -k "$KEYCHAIN" -A -T /usr/bin/pkgbuild
+          rm -f "$RUNNER_TEMP/app.p12" "$RUNNER_TEMP/installer.p12"
+          # Let codesign and pkgbuild use the keys without a GUI prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KEYCHAIN"
+          # pkgbuild also searches the default keychain, so make this one visible and the default.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed s/\"//g)
+          security default-keychain -d user -s "$KEYCHAIN"
+          app_id="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep 'Developer ID Application' | head -n1 | awk -F'"' '{print $2}')"
+          installer_id="$(security find-identity -v "$KEYCHAIN" | grep 'Developer ID Installer' | head -n1 | awk -F'"' '{print $2}')"
+          [ -n "$app_id" ] || { echo "::error::No 'Developer ID Application' identity in MAC_CERT_P12_BASE64"; exit 1; }
+          [ -n "$installer_id" ] || { echo "::error::No 'Developer ID Installer' identity in MAC_INSTALLER_CERT_P12_BASE64"; exit 1; }
+          {
+            echo "SIGNING_KEYCHAIN=$KEYCHAIN"
+            echo "CODESIGN_IDENTITY=$app_id"
+            echo "INSTALLER_SIGN_IDENTITY=$installer_id"
+          } >> "$GITHUB_ENV"
       - run: packaging/macos/build-pkg.sh
       # Run the frozen app: catches modules PyInstaller missed and crashes at startup.
       - name: Run it
@@ -70,6 +117,30 @@ jobs:
           sleep 10
           kill -0 "$pid" || { echo "menu-bar app exited at startup"; exit 1; }
           kill "$pid"
+      - name: Notarize and staple
+        if: env.INSTALLER_SIGN_IDENTITY != '' && env.AC_API_KEY_P8_BASE64 != ''
+        timeout-minutes: 50
+        env:
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          pkg=$(ls dist/*.pkg)
+          key="$RUNNER_TEMP/AuthKey.p8"
+          echo "$AC_API_KEY_P8_BASE64" | base64 --decode > "$key"
+          auth=(--key "$key" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER_ID")
+          # `submit --wait` exits 0 even when the status is Invalid, so check it and print the log.
+          xcrun notarytool submit "$pkg" "${auth[@]}" --wait --timeout 45m --output-format json > "$RUNNER_TEMP/notary.json" || true
+          cat "$RUNNER_TEMP/notary.json"
+          if [ "$(jq -r '.status // empty' "$RUNNER_TEMP/notary.json")" != "Accepted" ]; then
+            id=$(jq -r '.id // empty' "$RUNNER_TEMP/notary.json")
+            [ -z "$id" ] || xcrun notarytool log "$id" "${auth[@]}" || true
+            exit 1
+          fi
+          rm -f "$key"
+          xcrun stapler staple "$pkg"
+          xcrun stapler validate "$pkg"
+          spctl -a -vvv -t install "$pkg"
       - uses: actions/upload-artifact@v7
         with:
           name: macos-pkg-${{ matrix.runner }}

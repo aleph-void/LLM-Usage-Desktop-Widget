@@ -6,6 +6,12 @@
 # a LaunchAgent so it starts for every user at login.
 #
 # Needs: python3 with `pip install pyinstaller -r requirements.txt`.
+#
+# Signing (optional; unset = ad-hoc signed app, unsigned pkg, for local testing):
+#   CODESIGN_IDENTITY        "Developer ID Application: ..." (hardened runtime + timestamp)
+#   INSTALLER_SIGN_IDENTITY  "Developer ID Installer: ..."
+#   SIGNING_KEYCHAIN         keychain holding those identities
+# Notarize and staple the resulting pkg afterwards (see .github/workflows/build-installers.yml).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -34,7 +40,20 @@ PLIST="$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST" 2>/dev/null \
     || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$PLIST"
 # Editing Info.plist invalidates PyInstaller's ad-hoc signature; Apple Silicon refuses unsigned code.
-codesign --force --deep --sign "${CODESIGN_IDENTITY:--}" "$APP_PATH"
+if [ -z "${CODESIGN_IDENTITY:-}" ] || [ "$CODESIGN_IDENTITY" = "-" ]; then
+    codesign --force --deep --sign - "$APP_PATH"
+else
+    # Notarization needs every Mach-O signed with the hardened runtime and a timestamp.
+    # Sign inside-out: nested libraries first, the bundle (and its main executable) last.
+    SIGN=(codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY")
+    [ -n "${SIGNING_KEYCHAIN:-}" ] && SIGN+=(--keychain "$SIGNING_KEYCHAIN")
+    find "$APP_PATH/Contents" -type f ! -path "$APP_PATH/Contents/MacOS/$NAME" -print0 |
+        while IFS= read -r -d '' f; do
+            if file -b "$f" | grep -q 'Mach-O'; then "${SIGN[@]}" "$f"; fi
+        done
+    "${SIGN[@]}" --entitlements "$ROOT/packaging/macos/entitlements.plist" "$APP_PATH"
+    codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+fi
 
 # ---- package payload and scripts
 mkdir -p "$BUILD/root/Applications" "$BUILD/scripts"
@@ -93,7 +112,10 @@ plutil -replace 0.BundleIsRelocatable -bool NO "$BUILD/component.plist"
 mkdir -p "$ROOT/dist"
 OUT="$ROOT/dist/LLM-Usage-Widget-$VERSION-macos-$ARCH.pkg"
 SIGN_ARGS=()
-[ -n "${INSTALLER_SIGN_IDENTITY:-}" ] && SIGN_ARGS=(--sign "$INSTALLER_SIGN_IDENTITY")
+if [ -n "${INSTALLER_SIGN_IDENTITY:-}" ]; then
+    SIGN_ARGS=(--sign "$INSTALLER_SIGN_IDENTITY")
+    [ -n "${SIGNING_KEYCHAIN:-}" ] && SIGN_ARGS+=(--keychain "$SIGNING_KEYCHAIN")
+fi
 pkgbuild --root "$BUILD/root" \
     --component-plist "$BUILD/component.plist" \
     --scripts "$BUILD/scripts" \
@@ -102,4 +124,5 @@ pkgbuild --root "$BUILD/root" \
     --install-location / \
     ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} \
     "$OUT"
+[ -n "${INSTALLER_SIGN_IDENTITY:-}" ] && pkgutil --check-signature "$OUT" >&2
 echo "$OUT"

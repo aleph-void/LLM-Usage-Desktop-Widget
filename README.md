@@ -45,7 +45,7 @@ Download from the GitHub release (built by `.github/workflows/build-installers.y
 |---|---|---|
 | Linux (Debian/Ubuntu) | `llm-usage-widget_<ver>_all.deb` | `sudo apt install ./llm-usage-widget_*.deb`. Starts right away for every logged-in user, and at login via `/etc/xdg/autostart`. |
 | macOS | `LLM-Usage-Widget-<ver>-macos-arm64.pkg` (Apple Silicon) or `-x86_64.pkg` (Intel) | Installs `/Applications/LLM Usage.app` plus a login LaunchAgent. Release builds are signed with a Developer ID and notarized by Apple. |
-| Windows | `LLM-Usage-Widget-<ver>-windows-setup.exe` | Per-user install, no admin rights needed. "Start automatically when I sign in" is ticked by default. The build is unsigned, so SmartScreen may warn: click **More info → Run anyway**. Uninstall from *Settings → Apps*. |
+| Windows | `LLM-Usage-Widget-<ver>-windows-setup.exe` | Per-user install, no admin rights needed. "Start automatically when I sign in" is ticked by default. The build is unsigned, so SmartScreen may warn: click **More info → Run anyway**. Uninstall from *Settings → Apps*, the *Uninstall LLM Usage Widget* Start Menu entry, or by running `LLM-Usage-Widget-<ver>-windows-uninstall.exe` from the same release (add `/VERYSILENT` to skip the prompts). Settings in `%APPDATA%\llm-usage-widget` are kept. |
 
 To uninstall the macOS package:
 
@@ -186,7 +186,8 @@ downloaded installer to check it yourself:
 powershell -File packaging\windows\verify-signature.ps1 .\LLM-Usage-Widget-<ver>-windows-setup.exe
 ```
 
-The uninstaller that Inno Setup writes at install time is not signed. It runs without elevation
+The release's `-windows-uninstall.exe` is signed the same way. The uninstaller that Inno Setup
+writes into the install folder at install time is not signed. It runs without elevation
 (the install is per-user), so Windows doesn't show a publisher prompt for it.
 
 ## Amazon Bedrock (and bedrock-mantle)
@@ -241,3 +242,7 @@ bypass the cache either. Billing data can lag by a day or more, so don't treat t
 ## Adding a provider
 
 Write a `fetch_<name>()` that returns a `ProviderUsage` and add it to `PROVIDERS`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

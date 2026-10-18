@@ -1,11 +1,12 @@
-# Build dist\LLM-Usage-Widget-<version>-windows-setup.exe (run on Windows).
+# Build dist\LLM-Usage-Widget-<version>-windows-setup.exe and the standalone
+# dist\LLM-Usage-Widget-<version>-windows-uninstall.exe (run on Windows).
 #
 # Freezes the app with PyInstaller (no console window) and packages it with
 # Inno Setup 6. Needs: python with `pip install pyinstaller -r requirements.txt`,
 # and Inno Setup (https://jrsoftware.org/isdl.php; preinstalled on GitHub's Windows runners).
 #
 # -Step app        only freeze build\windows\dist\LLMUsageWidget\ (CI signs the .exe next)
-# -Step installer  only package what -Step app built
+# -Step installer  only package what -Step app built, and build the uninstaller
 # Default: both.
 param([ValidateSet('all', 'app', 'installer')][string]$Step = 'all')
 $ErrorActionPreference = 'Stop'
@@ -46,7 +47,9 @@ if (-not $iscc) {
         Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 if (-not $iscc) { throw 'Inno Setup 6 (ISCC.exe) not found' }
-& $iscc "/DAppVersion=$Version" (Join-Path $PSScriptRoot 'installer.iss')
-if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed' }
+foreach ($iss in 'installer.iss', 'uninstaller.iss') {
+    & $iscc "/DAppVersion=$Version" (Join-Path $PSScriptRoot $iss)
+    if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed on $iss" }
+}
 
-Get-ChildItem (Join-Path $Root 'dist') -Filter '*-windows-setup.exe' | ForEach-Object { $_.FullName }
+Get-ChildItem (Join-Path $Root 'dist') -Filter "*-$Version-windows-*.exe" | ForEach-Object { $_.FullName }

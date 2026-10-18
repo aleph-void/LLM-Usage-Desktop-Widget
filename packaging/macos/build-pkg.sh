@@ -40,9 +40,17 @@ codesign --force --deep --sign "${CODESIGN_IDENTITY:--}" "$APP_PATH"
 mkdir -p "$BUILD/root/Applications" "$BUILD/scripts"
 ditto "$APP_PATH" "$BUILD/root/Applications/$NAME.app"
 
+# UIDs with a GUI login session: one loginwindow per session, including fast user switching.
+GUI_UIDS="gui_uids() { ps -axo uid=,comm= | awk '\$2 ~ /loginwindow\$/ && \$1 > 0 {print \$1}' | sort -u; }"
+
 cat > "$BUILD/scripts/preinstall" <<EOF
 #!/bin/sh
-# Stop the running copy so its files can be replaced.
+# Stop the running copies so their files can be replaced. Unload the agent first:
+# its KeepAlive would relaunch a killed copy while the payload is being copied.
+$GUI_UIDS
+for uid in \$(gui_uids); do
+    launchctl bootout "gui/\$uid/$LABEL" 2>/dev/null || true
+done
 pkill -f "/Applications/$NAME.app/Contents/MacOS/" 2>/dev/null || true
 exit 0
 EOF
@@ -68,12 +76,12 @@ PLIST
 chown root:wheel "\$AGENT"
 chmod 0644 "\$AGENT"
 
-# Start it now for whoever is logged in at the console.
-CONSOLE_UID=\$(stat -f %u /dev/console)
-if [ "\$CONSOLE_UID" -gt 0 ] 2>/dev/null; then
-    launchctl bootout "gui/\$CONSOLE_UID/$LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/\$CONSOLE_UID" "\$AGENT" || true
-fi
+# Start it now for everyone who is logged in (preinstall unloaded it for them).
+$GUI_UIDS
+for uid in \$(gui_uids); do
+    launchctl bootout "gui/\$uid/$LABEL" 2>/dev/null || true
+    launchctl bootstrap "gui/\$uid" "\$AGENT" || true
+done
 exit 0
 EOF
 chmod 0755 "$BUILD/scripts/preinstall" "$BUILD/scripts/postinstall"

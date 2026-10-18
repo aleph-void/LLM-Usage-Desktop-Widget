@@ -60,6 +60,16 @@ jobs:
           python-version: '3.12'
       - run: python3 -m pip install pyinstaller -r requirements.txt
       - run: packaging/macos/build-pkg.sh
+      # Run the frozen app: catches modules PyInstaller missed and crashes at startup.
+      - name: Run it
+        run: |
+          app="build/macos/dist/LLM Usage.app/Contents/MacOS/LLM Usage"
+          "$app" --version
+          "$app" --once
+          "$app" & pid=$!
+          sleep 10
+          kill -0 "$pid" || { echo "menu-bar app exited at startup"; exit 1; }
+          kill "$pid"
       - uses: actions/upload-artifact@v7
         with:
           name: macos-pkg-${{ matrix.runner }}

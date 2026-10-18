@@ -5,6 +5,9 @@
 # icon) and wraps it in an installer that puts it in /Applications and registers
 # a LaunchAgent so it starts for every user at login.
 #
+# Also builds dist/LLM-Usage-Widget-<version>-macos-uninstall.pkg, a payload-free
+# package that runs packaging/macos/uninstall.sh (also bundled in the app's Resources).
+#
 # Needs: python3 with `pip install pyinstaller -r requirements.txt`.
 #
 # Signing (optional; unset = ad-hoc signed app, unsigned pkg, for local testing):
@@ -39,6 +42,7 @@ PLIST="$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST" 2>/dev/null \
     || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$PLIST"
+install -m 0755 "$ROOT/packaging/macos/uninstall.sh" "$APP_PATH/Contents/Resources/uninstall.sh"
 # Editing Info.plist invalidates PyInstaller's ad-hoc signature; Apple Silicon refuses unsigned code.
 if [ -z "${CODESIGN_IDENTITY:-}" ] || [ "$CODESIGN_IDENTITY" = "-" ]; then
     codesign --force --deep --sign - "$APP_PATH"
@@ -126,3 +130,16 @@ pkgbuild --root "$BUILD/root" \
     "$OUT"
 [ -n "${INSTALLER_SIGN_IDENTITY:-}" ] && pkgutil --check-signature "$OUT" >&2
 echo "$OUT"
+
+# ---- uninstaller: no payload (so no receipt), just the uninstall script as postinstall
+mkdir -p "$BUILD/uninstall-scripts"
+install -m 0755 "$ROOT/packaging/macos/uninstall.sh" "$BUILD/uninstall-scripts/postinstall"
+UNINSTALL_OUT="$ROOT/dist/LLM-Usage-Widget-$VERSION-macos-uninstall.pkg"
+pkgbuild --nopayload \
+    --scripts "$BUILD/uninstall-scripts" \
+    --identifier "$BUNDLE_ID.uninstall" \
+    --version "$VERSION" \
+    ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} \
+    "$UNINSTALL_OUT"
+[ -n "${INSTALLER_SIGN_IDENTITY:-}" ] && pkgutil --check-signature "$UNINSTALL_OUT" >&2
+echo "$UNINSTALL_OUT"

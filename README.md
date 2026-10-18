@@ -28,6 +28,8 @@ token is sent only to the provider that issued it.
 | Claude | macOS Keychain `Claude Code-credentials`, else `~/.claude/.credentials.json` (`$CLAUDE_CONFIG_DIR`) | `api.anthropic.com/api/oauth/usage` |
 | Codex  | `~/.codex/auth.json` (`$CODEX_HOME`) | `chatgpt.com/backend-api/wham/usage` |
 | Bedrock | Your AWS credentials (profile, SSO, env vars), via boto3 | AWS Budgets, Cost Explorer, CloudWatch |
+| Vertex | Google Application Default Credentials (`gcloud auth application-default login`) | Cloud Monitoring, BigQuery billing export |
+| Azure | The Azure CLI login (`az login`), or azure-identity if installed | Azure Monitor, Cost Management, Consumption budgets |
 
 > These are the same internal endpoints the official CLIs use for their `/usage` and `/status`
 > screens. They are undocumented and may change; if a provider shows an error after an update,
@@ -240,8 +242,81 @@ have expired (for example an SSO session), the section says to run `aws sso logi
 **Cost:** Cost Explorer charges $0.01 per request and its data only updates a few times a day, so spend
 (and the budget) is fetched at most every `cost_interval` seconds (6 h by default, about $1.20 a month).
 Token counts are fetched every `metrics_interval` seconds (15 min). Both are cached in
-`bedrock-cache.json` next to `config.json`, so restarts don't refetch them, and *Refresh now* doesn't
+`cloud-cache.json` next to `config.json`, so restarts don't refetch them, and *Refresh now* doesn't
 bypass the cache either. Billing data can lag by a day or more, so don't treat this as a spending alarm.
+
+## Google Vertex AI
+
+If Claude Code or Codex runs on Vertex AI, the widget adds a **Vertex** section instead:
+
+- **Tokens today:** input and output tokens since local midnight from Cloud Monitoring
+  (`aiplatform.googleapis.com/publisher/online_serving/token_count`). This counts every publisher model in the
+  project (Claude, Gemini and others), not only the ones the CLIs use.
+- **This month:** month-to-date spend, after credits, for Vertex AI and partner models such as Claude. Google
+  has no API that reports current spend, so this needs a
+  [Cloud Billing export to BigQuery](https://cloud.google.com/billing/docs/how-to/export-data-bigquery) and
+  its table name in `billing_table`. If you also set `budget` (an amount per month, in the billing currency),
+  the row becomes a percentage bar.
+
+The section turns on when Claude Code's settings set `CLAUDE_CODE_USE_VERTEX`, or a `base_url` in
+`~/.codex/config.toml` points at `aiplatform.googleapis.com`. The project comes from
+`ANTHROPIC_VERTEX_PROJECT_ID` or the `projects/<id>/` part of that URL. Overrides go in `config.json`:
+
+```json
+{
+  "vertex": {
+    "projects": ["my-project"],
+    "billing_table": "my-project.billing.gcp_billing_export_v1_XXXXXX_XXXXXX_XXXXXX",
+    "budget": 500,
+    "cost_interval": 21600,
+    "metrics_interval": 900
+  }
+}
+```
+
+Use `"vertex": true` or `false` to force the section on or off. Credentials are the Application Default
+Credentials from `gcloud auth application-default login` (or `$GOOGLE_APPLICATION_CREDENTIALS`), refreshed
+directly with Google. For service-account or other ADC types the widget uses the `google-auth` package if it
+is installed, else `gcloud auth print-access-token`. The identity needs `monitoring.timeSeries.list`
+(*Monitoring Viewer*) and, for spend, *BigQuery Job User* plus read access to the export dataset. The billing
+query is run in the first project and scans the current month of the export table, which usually costs
+nothing or close to it.
+
+## Azure OpenAI and Microsoft Foundry
+
+If Codex (or Claude Code, through Microsoft Foundry) runs on Azure, the widget adds an **Azure** section:
+
+- **Budget:** spend against an [Azure budget](https://portal.azure.com/#view/Microsoft_Azure_CostManagement/Menu/~/budgets)
+  as a percentage bar. This only appears if you name a budget.
+- **This month:** month-to-date actual cost of the Azure OpenAI / Foundry resources, from Cost Management.
+- **Tokens today:** prompt and completion tokens since local midnight, from Azure Monitor.
+
+The section turns on when a `base_url` in `~/.codex/config.toml` points at `<resource>.openai.azure.com`,
+`<resource>.cognitiveservices.azure.com` or `<resource>.services.ai.azure.com`, or Claude Code's settings set
+`CLAUDE_CODE_USE_FOUNDRY` (the resource comes from `ANTHROPIC_FOUNDRY_RESOURCE` or
+`ANTHROPIC_FOUNDRY_BASE_URL`). The widget finds those resources in your subscription. Overrides go in
+`config.json`:
+
+```json
+{
+  "azure": {
+    "subscription": "00000000-0000-0000-0000-000000000000",
+    "resources": ["my-openai", "/subscriptions/.../providers/Microsoft.CognitiveServices/accounts/other"],
+    "budget": "ai-monthly",
+    "cost_management": true,
+    "cost_interval": 21600,
+    "metrics_interval": 900
+  }
+}
+```
+
+`resources` takes resource names or full resource IDs. With `"azure": true` and no resources, every Azure
+OpenAI and AI Services resource in the subscription is included. `budget` is a budget name at subscription
+scope, or a budget's full resource ID for one on a resource group. Without `subscription`, the Azure CLI's
+current one is used (or all of them, with azure-identity). Credentials come from `az login`, or from the
+`azure-identity` package's `DefaultAzureCredential` if the CLI isn't available. The identity needs *Reader*
+on the resources (with *Monitoring Reader*) and *Cost Management Reader* on the subscription. Cost data is
+cached like Bedrock's: Cost Management is free but throttled, and only updates a few times a day.
 
 ## Adding a provider
 

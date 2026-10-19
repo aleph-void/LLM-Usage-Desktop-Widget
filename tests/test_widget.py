@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 import types
 from datetime import datetime, timedelta, timezone
 
@@ -62,9 +63,14 @@ def one_tk_on_macos(request, monkeypatch):
     earlier one was destroyed in the same process, so there every window the tests make is a
     Toplevel of one hidden Tk that lives for the whole module."""
     if sys.platform != "darwin":
+        yield
         return
     root = request.getfixturevalue("shared_root")
     monkeypatch.setattr(tk, "Tk", lambda *args, **kwargs: tk.Toplevel(root))
+    yield
+    # A destroyed window's timers (the widget's _tick) would still fire in later tests.
+    for after_id in root.tk.splitlist(root.tk.call("after", "info")):
+        root.after_cancel(after_id)
 
 
 @pytest.fixture
@@ -248,6 +254,14 @@ def test_widget_reloads_settings_after_a_fetch(widget):
 
 def test_widget_picks_up_a_reached_cutoff(widget, monkeypatch):
     monkeypatch.setattr(w, "find_cli_processes", lambda: [])
+
+    def fresh():  # fetched now, so a _tick firing on a slow runner redraws instead of fetching again
+        results = sample()
+        for u in results:
+            u.fetched_at = time.time()
+        return results
+
+    monkeypatch.setattr(w, "fetch_all", fresh)
     w.update_config(cutoff={"Claude": 90}, x=7)  # the sample's Claude is at 95%
     widget.refresh()
     widget.root.update()

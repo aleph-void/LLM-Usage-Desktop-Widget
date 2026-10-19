@@ -226,6 +226,32 @@ def test_widget_menu(widget):
                                         "Stop Bedrock at: off", "About", "Quit"]
 
 
+def test_widget_update_available(newer_release, widget, monkeypatch):
+    opened = []
+    monkeypatch.setattr(w.webbrowser, "open", opened.append)
+    assert widget.update == newer_release
+    assert widget.update_link.winfo_manager() == "pack"
+    assert widget.update_link.cget("text") == "⬆ v99.0.0"
+    widget._build_menu()
+    assert menu_labels(widget.menu)[:2] == ["Update available: v99.0.0", "Refresh now"]
+    assert widget.menu.type(1) == "separator"
+    widget.menu.invoke(0)
+    widget._open_update()  # what clicking the header link does
+    assert opened == [newer_release["url"]] * 2
+    widget._apply(sample())  # no newer release (any more)
+    assert widget.update_link.winfo_manager() == ""
+    widget._build_menu()
+    assert menu_labels(widget.menu)[0] == "Refresh now"
+
+
+def test_widget_no_update(widget):
+    # The conftest blocks the network, so the check fails quietly and nothing is offered.
+    assert widget.update is None
+    assert widget.update_link.winfo_manager() == ""
+    widget._build_menu()
+    assert menu_labels(widget.menu)[0] == "Refresh now"
+
+
 def test_widget_cutoff_menu(widget):
     w.save_config({"cutoff": {"Codex": 90}, "bedrock": {"budget": "b"}})
     widget.cfg = w.load_config()

@@ -150,6 +150,22 @@ A full copy is also kept in the local `config.json`, which is used whenever no c
 To edit settings by hand while syncing, edit a copy in a cloud folder. To stop syncing on one computer,
 add `"sync": false` to its local `config.json`. Uninstalling leaves the cloud copies in place.
 
+### Update notifications
+
+Once a day the widget asks GitHub for the [latest release](https://github.com/aleph-void/LLM-Usage-Desktop-Widget/releases/latest)
+(drafts and pre-releases don't count). When it is newer than the running copy, the menu starts with
+*Update available: v1.2.3*, which opens the release page, and the tooltip (the `⬆ v1.2.3` link in the
+floating widget's header) says so too. A desktop notification announces each new version once: Notification
+Center on macOS, a notification-area balloon on Windows, `notify-send` on Linux (from `libnotify-bin`, if
+installed). The floating widget on Windows has no notification, only the menu item and header link. The
+answer is cached in `cloud-cache.json`, so restarts don't ask again; if GitHub can't be reached, the
+widget tries again an hour later and otherwise carries on as usual. To turn the check off, add this to
+`config.json`:
+
+```json
+"update_check": false
+```
+
 ### Expired logins
 
 Claude Code and Codex refresh their own tokens while you use them. If you haven't used one for a while,

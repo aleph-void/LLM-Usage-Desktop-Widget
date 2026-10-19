@@ -558,11 +558,17 @@ def test_desktop_tray_windows_menu_on_any_click(pystray, monkeypatch):
     class FakeStrip:
         def __init__(self, tray):
             self.closed = False
+            self.focus_checks = 0
 
         def close(self):
             self.closed = True
 
+        def take_focus_from_taskbar(self):
+            self.focus_checks += 1
+            return False
+
     monkeypatch.setattr(w, "TaskbarStrip", FakeStrip)
+    monkeypatch.setattr(w.time, "sleep", lambda s: None)
     tray = w.DesktopTray(60)
     assert tray.strip is not None
     tray.data = sample_data()
@@ -570,8 +576,10 @@ def test_desktop_tray_windows_menu_on_any_click(pystray, monkeypatch):
     assert handler(0, 0x202) == "handled"
     assert seen == [0x205]  # a left click opens the menu like a right click
     assert tray.icon.menu.texts()[0] == "Claude  (Max)"  # rebuilt on open
+    assert tray.strip.focus_checks > 0  # once the menu has closed, the taskbar must not keep the focus
     assert handler(0, 0x200) == "handled"
     assert seen[-1] == 0x200  # other messages pass through
+    assert tray.strip.focus_checks == 10  # not for other messages
     tray.icon._hwnd = 99
     tray.open_menu()
     assert posted == [(99, 0x4E, 0, 0x202)]

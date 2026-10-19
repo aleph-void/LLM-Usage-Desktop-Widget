@@ -1,6 +1,6 @@
 ; Inno Setup script: per-user installer (no admin rights) that adds a Start Menu
 ; entry and, by default, starts the widget at sign-in.
-; Built by build.ps1:  iscc /DAppVersion=1.0.0 installer.iss
+; Built by build.ps1:  iscc /DAppVersion=1.0.2 installer.iss
 ;
 ; The same .exe also uninstalls, by running the installed copy's own uninstaller
 ; (the one Settings > Apps runs):

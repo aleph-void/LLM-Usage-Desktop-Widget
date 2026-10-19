@@ -2333,6 +2333,9 @@ class TaskbarStrip:
             (u.IsWindowVisible, [W.HWND], W.BOOL),
             (u.GetForegroundWindow, [], W.HWND),
             (u.GetClassNameW, [W.HWND, W.LPWSTR, ctypes.c_int], ctypes.c_int),
+            (u.GetWindowThreadProcessId, [W.HWND, ctypes.POINTER(W.DWORD)], W.DWORD),
+            (u.SetForegroundWindow, [W.HWND], W.BOOL),
+            (u.AttachThreadInput, [W.DWORD, W.DWORD, W.BOOL], W.BOOL),
             (u.GetSystemMetrics, [ctypes.c_int], ctypes.c_int),
             (u.GetDC, [W.HWND], W.HDC),
             (u.ReleaseDC, [W.HWND, W.HDC], ctypes.c_int),
@@ -2441,6 +2444,33 @@ class TaskbarStrip:
             spans.append((x, tray_left))
         return spans[::-1]
 
+    def _is_shell(self, hwnd, taskbar) -> bool:
+        """Whether hwnd belongs to the process that owns the taskbar (Explorer)."""
+        pid, shell_pid = self.ctypes.c_ulong(), self.ctypes.c_ulong()
+        self.user32.GetWindowThreadProcessId(hwnd, pid)
+        self.user32.GetWindowThreadProcessId(taskbar, shell_pid)
+        return bool(pid.value) and pid.value == shell_pid.value
+
+    def take_focus_from_taskbar(self) -> bool:
+        """If the taskbar has the focus, move it to the strip; True if it did (any thread).
+
+        Windows 11 lifts a focused taskbar into a z-order band that nothing else can be above,
+        hiding the strip behind it until some ordinary window is activated. Only the foreground
+        process may change the foreground window, so share the input queue of the shell's
+        thread for the call, the usual way around that.
+        """
+        u = self.user32
+        fg, taskbar = u.GetForegroundWindow(), u.FindWindowW("Shell_TrayWnd", None)
+        if not (fg and taskbar and self._is_shell(fg, taskbar)):
+            return False
+        shell_thread, me = u.GetWindowThreadProcessId(fg, None), threading.get_native_id()
+        u.AttachThreadInput(me, shell_thread, True)
+        try:
+            u.SetForegroundWindow(self.hwnd)
+        finally:
+            u.AttachThreadInput(me, shell_thread, False)
+        return True
+
     def _fullscreen_app(self, taskbar) -> bool:
         u = self.user32
         fg = u.GetForegroundWindow()
@@ -2450,6 +2480,10 @@ class TaskbarStrip:
         u.GetClassNameW(fg, buf, 64)
         if buf.value in ("Progman", "WorkerW"):
             return False  # the desktop
+        if self._is_shell(fg, taskbar):
+            # Windows 11 puts the taskbar's flyouts in a screen-sized XamlExplorerHostIslandWindow,
+            # the foreground window whenever the taskbar has the focus.
+            return False
         r = self._rect(fg)
         return bool(r) and r[0] <= 0 and r[1] <= 0 and r[2] >= u.GetSystemMetrics(0) and r[3] >= u.GetSystemMetrics(1)
 
@@ -2631,11 +2665,25 @@ class DesktopTray:
         def handler(wparam, lparam):
             if lparam in (win32.WM_LBUTTONUP, win32.WM_RBUTTONUP):
                 self.icon.menu = self._menu()
-                lparam = win32.WM_RBUTTONUP
+                result = on_notify(wparam, win32.WM_RBUTTONUP)  # returns once the menu has closed
+                self._unfocus_taskbar()
+                return result
             return on_notify(wparam, lparam)
 
         self.icon._message_handlers[win32.WM_NOTIFY] = handler
         self._win32 = win32
+
+    def _unfocus_taskbar(self):
+        """After the menu closes, keep the taskbar from holding the focus, which would hide the strip.
+
+        Dismissing the menu by clicking on the taskbar gives the taskbar the focus (see
+        TaskbarStrip.take_focus_from_taskbar), a moment after the menu has gone, so watch for a bit.
+        """
+        if not self.strip:
+            return
+        for _ in range(10):
+            time.sleep(0.05)
+            self.strip.take_focus_from_taskbar()
 
     def open_menu(self):
         """Show the tray menu at the mouse pointer (Windows; any thread)."""

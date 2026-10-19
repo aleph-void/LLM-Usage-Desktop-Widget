@@ -150,8 +150,12 @@ def test_free_spans_buttons_reaching_the_tray():
 # -- _placement / _fullscreen_app ----------------------------------------------
 
 class FakeUser32:
-    def __init__(self, visible=True, screen=(1920, 1080), foreground=0, fg_class="Notepad"):
+    SHELL_PID = 1234  # explorer.exe, which owns the taskbar (hwnd 1)
+
+    def __init__(self, visible=True, screen=(1920, 1080), foreground=0, fg_class="Notepad", fg_pid=99):
         self.visible, self.screen, self.foreground, self.fg_class = visible, screen, foreground, fg_class
+        self.fg_pid = fg_pid
+        self.calls = []
 
     def FindWindowW(self, cls, name):
         return 1 if cls == "Shell_TrayWnd" else 0
@@ -171,6 +175,19 @@ class FakeUser32:
     def GetClassNameW(self, hwnd, buf, size):
         buf.value = self.fg_class
         return len(self.fg_class)
+
+    def GetWindowThreadProcessId(self, hwnd, pid):
+        if pid is not None:
+            pid.value = self.SHELL_PID if hwnd == 1 else self.fg_pid
+        return 42  # the thread
+
+    def AttachThreadInput(self, me, other, attach):
+        self.calls.append(("attach" if attach else "detach", other))
+        return True
+
+    def SetForegroundWindow(self, hwnd):
+        self.calls.append(("foreground", hwnd))
+        return True
 
 
 def placement_strip(rects, **user32):
@@ -201,19 +218,43 @@ def test_placement_hidden(rects, user32):
     assert placement_strip(rects, **user32)._placement() is None
 
 
-@pytest.mark.parametrize("foreground, rect, cls, expected", [
-    (0, None, "X", False),  # nothing in front
-    (1, (0, 0, 1920, 1080), "X", False),  # the taskbar itself
-    (500, (0, 0, 1920, 1080), "X", False),  # the strip itself
-    (7, (0, 0, 1920, 1080), "Progman", False),  # the desktop
-    (7, (0, 0, 1920, 1080), "WorkerW", False),
-    (7, (100, 100, 800, 600), "X", False),  # an ordinary window
-    (7, (-8, -8, 1928, 1088), "X", True),  # maximised past the edges counts as full screen
-    (7, None, "X", False),  # window vanished
+@pytest.mark.parametrize("foreground, rect, cls, pid, expected", [
+    (0, None, "X", 99, False),  # nothing in front
+    (1, (0, 0, 1920, 1080), "X", 99, False),  # the taskbar itself
+    (500, (0, 0, 1920, 1080), "X", 99, False),  # the strip itself
+    (7, (0, 0, 1920, 1080), "Progman", 99, False),  # the desktop
+    (7, (0, 0, 1920, 1080), "WorkerW", 99, False),
+    # The Windows 11 shell's screen-sized flyout host, foreground after the tray menu closes.
+    (7, (0, 0, 1920, 1080), "XamlExplorerHostIslandWindow", FakeUser32.SHELL_PID, False),
+    (7, (100, 100, 800, 600), "X", 99, False),  # an ordinary window
+    (7, (-8, -8, 1928, 1088), "X", 99, True),  # maximised past the edges counts as full screen
+    (7, (0, 0, 1920, 1080), "X", 99, True),  # a full-screen app from another process
+    (7, None, "X", 99, False),  # window vanished
 ])
-def test_fullscreen_app(foreground, rect, cls, expected):
-    strip = placement_strip({7: rect} if rect else {}, foreground=foreground, fg_class=cls)
+def test_fullscreen_app(foreground, rect, cls, pid, expected):
+    strip = placement_strip({7: rect} if rect else {}, foreground=foreground, fg_class=cls, fg_pid=pid)
     assert strip._fullscreen_app(1) is expected
+
+
+# -- take_focus_from_taskbar -----------------------------------------------------
+
+def test_take_focus_from_taskbar():
+    # The shell has the focus (as after dismissing the menu by clicking on the taskbar):
+    # activate the strip while sharing the shell thread's input queue, then let go of it.
+    strip = placement_strip({}, foreground=7, fg_pid=FakeUser32.SHELL_PID)
+    assert strip.take_focus_from_taskbar() is True
+    assert strip.user32.calls == [("attach", 42), ("foreground", 500), ("detach", 42)]
+
+
+@pytest.mark.parametrize("user32", [
+    {"foreground": 0},  # nothing has the focus
+    {"foreground": 7, "fg_pid": 99},  # an app has it
+    {"foreground": 500, "fg_pid": 99},  # the strip itself
+])
+def test_take_focus_from_taskbar_leaves_others_alone(user32):
+    strip = placement_strip({}, **user32)
+    assert strip.take_focus_from_taskbar() is False
+    assert strip.user32.calls == []
 
 
 # -- _taskbar_color --------------------------------------------------------------

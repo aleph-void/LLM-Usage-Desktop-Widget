@@ -305,6 +305,23 @@ def test_tray_icon_levels(linux_tray, gtk):
     assert tray.ind.label == "Claude –  Codex –"
 
 
+def test_tray_shows_credits_left_once_the_plan_is_full(linux_tray, gtk):
+    run_idle(gtk)
+    tray = linux_tray
+    tray.data = [w.ProviderUsage("Claude", limits=[w.Limit("5h", 100)], credits=w.Credits(used=10, cap=40, unit="$")),
+                 w.ProviderUsage("Codex", limits=[w.Limit("5h", 100)], credits=w.Credits(left=42))]
+    tray.render()
+    assert tray.ind.label == "Claude 75% left  Codex 42 left"
+    assert tray.ind.icon == "llm-usage-normal"
+    tray.data[0].credits.used = 38  # 5% left
+    tray.render()
+    assert tray.ind.label == "Claude 5% left  Codex 42 left"
+    assert tray.ind.icon == "llm-usage-critical"
+    tray.data[0].limits[0].percent = 99  # the plan has room again: back to its percentage
+    tray.render()
+    assert tray.ind.label == "Claude 99%  Codex 42 left"
+
+
 def test_tray_collapse_to_logo(linux_tray, gtk):
     run_idle(gtk)
     tray = linux_tray
@@ -692,6 +709,26 @@ def test_gauge_image_fill_and_colors():
     assert img.getpixel((centers[1], 20))[:3] == rgb(w.THEME["critical"])
     # Bedrock: no percentage, so an empty track.
     assert img.getpixel((centers[2], 80))[:3] == rgb(w.THEME["track"])
+
+
+def test_gauge_image_fills_to_credits_spent_once_the_plan_is_full():
+    pytest.importorskip("PIL")
+    data = [
+        w.ProviderUsage("Claude", limits=[w.Limit("s", 100)], credits=w.Credits(used=12.5, cap=50, unit="$")),
+        w.ProviderUsage("Codex", limits=[w.Limit("s", 100)], credits=w.Credits(left=42)),
+        w.ProviderUsage("Vertex", limits=[w.Limit("s", 100)]),
+    ]
+    img = w.gauge_image(data, size=100)
+    gap = 10
+    width = (100 - gap * 4) // 3
+    centers = [gap + i * (width + gap) + width // 2 for i in range(3)]
+    # Claude: a quarter of the credits spent, green at the bottom, track above.
+    assert img.getpixel((centers[0], 85))[:3] == rgb(w.THEME["normal"])
+    assert img.getpixel((centers[0], 50))[:3] == rgb(w.THEME["track"])
+    # Codex: a balance of unknown size, so the full plan bar, but no longer red.
+    assert img.getpixel((centers[1], 20))[:3] == rgb(w.THEME["normal"])
+    # Vertex: full and without credits, so red.
+    assert img.getpixel((centers[2], 20))[:3] == rgb(w.THEME["critical"])
 
 
 def test_gauge_image_caps_overfull():

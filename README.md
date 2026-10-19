@@ -16,6 +16,9 @@ limits, and time until each resets) where your system status icons live:
 The dropdown lists every limit with its percentage and reset countdown, plus *Refresh now*,
 links to each provider's usage page, and *Quit*. Bars and icons are green below 70%, amber from 70% and red from 90%
 (or whatever severity the provider reports). If a refresh fails, the last numbers are kept and marked stale.
+Once a provider's plan is at 100% and it has usage credits (Claude's extra usage, a Codex credit balance),
+the top-bar text and icon switch to what is left of those instead, e.g. `Claude 75% left`, colored by how
+much is spent; without a cap to measure against (a Codex balance), it shows the amount left, e.g. `Codex 42 left`.
 
 There is also a floating always-on-top window (`--widget`) for desktops without a tray.
 

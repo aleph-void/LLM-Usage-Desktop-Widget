@@ -70,10 +70,26 @@ class CutoffConfigTests(TempConfig):
         self.assertEqual(w.cutoff_menu_label(cfg, "Codex"), "Stop Codex at: off")
 
     def test_menu_providers(self):
-        self.assertEqual(w.cutoff_menu_providers([]), [])
-        codex = usage("Codex")
+        self.assertEqual(w.cutoff_menu_providers({}, []), [])
+        codex = usage("Codex", 88)
         codex.account = "acct-1"
-        self.assertEqual(w.cutoff_menu_providers([codex, usage("Bedrock")]), [("Codex", "acct-1"), ("Bedrock", "")])
+        self.assertEqual(w.cutoff_menu_providers({}, [codex, usage("Bedrock", 97.5)]),
+                         [("Codex", "acct-1", [0, 90, 95]), ("Bedrock", "", [0])])
+
+    def test_choices_start_above_the_fullest_limit(self):
+        self.assertEqual(w.cutoff_choices({}, usage("Claude", 12, 42.3)), [0, *range(45, 100, 5)])
+        self.assertEqual(w.cutoff_choices({}, usage("Claude", 45)), [0, *range(50, 100, 5)])  # 45% would fire at once
+        self.assertEqual(w.cutoff_choices({}, usage("Claude", 95)), [0])
+        self.assertEqual(w.cutoff_choices({}, usage("Bedrock", 130)), [0])
+
+    def test_choices_without_usage(self):
+        for u in (usage("Codex"), usage("Codex", None), usage("Codex", error="HTTP 500")):
+            self.assertEqual(w.cutoff_choices({}, u), [0, *range(5, 100, 5)])
+
+    def test_choices_keep_a_hand_set_cutoff_above_the_usage(self):
+        self.assertEqual(w.cutoff_choices({"cutoff": {"Claude": 99}}, usage("Claude", 90)), [0, 95, 99])
+        self.assertEqual(w.cutoff_choices({"cutoff": {"Claude": 85}}, usage("Claude", 90)), [0, 95])
+        self.assertEqual(w.cutoff_choices({"cutoff": {"Claude": 97.5}}, usage("Claude", 90)), [0, 95])
 
 
 class AccountCutoffTests(TempConfig):

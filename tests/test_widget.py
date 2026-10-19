@@ -259,16 +259,17 @@ def test_widget_cutoff_menu(widget):
     menu = widget.menu
     assert menu.entrycget(3, "label") == "Stop Codex at: 90%"
     codex = widget.root.nametowidget(menu.entrycget(3, "menu"))
-    assert menu_labels(codex) == ["Off", "80%", "90%", "95%", "99%"]
+    assert menu_labels(codex) == ["Off", *(f"{v}%" for v in range(5, 100, 5))]  # no usage known
     assert widget.cutoff_vars[1].get() == 90
     claude = widget.root.nametowidget(menu.entrycget(2, "menu"))
-    claude.invoke(3)  # 95%
-    codex.invoke(0)  # Off
-    assert w.load_config() == {"cutoff": {"Claude": 95}, "bedrock": {"budget": "b"}}
+    assert menu_labels(claude) == ["Off"]  # already at 95%
+    codex.invoke(19)  # 95%
+    claude.invoke(0)  # Off
+    assert w.load_config() == {"cutoff": {"Codex": 95}, "bedrock": {"budget": "b"}}
     assert widget.cfg == w.load_config()
     widget._build_menu()  # rebuilding doesn't pile up old submenus
     assert len(widget.menu.winfo_children()) == 4  # three providers and About
-    assert widget.menu.entrycget(2, "label") == "Stop Claude at: 95%"
+    assert widget.menu.entrycget(3, "label") == "Stop Codex at: 95%"
 
 
 def test_widget_reloads_settings_after_a_fetch(widget):

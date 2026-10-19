@@ -215,14 +215,14 @@ def test_tray_cutoff_menu(linux_tray, gtk):
     menu = linux_tray.ind.menu
     assert {"Stop Claude at: off", "Stop Codex at: 95%", "Stop Bedrock at: off"} <= set(menu.labels())
     codex = menu.item("Stop Codex at: 95%").submenu
-    assert codex.labels() == ["Off", "80%", "90%", "95%", "99%"]
-    assert [i.active for i in codex.items] == [False, False, False, True, False]
+    assert codex.labels() == ["Off", "85%", "90%", "95%"]  # Codex is at 80%
+    assert [i.active for i in codex.items] == [False, False, False, True]
     assert all(i.radio for i in codex.items)
-    menu.item("Stop Claude at: off").submenu.item("80%").handlers["activate"](None)
+    menu.item("Stop Claude at: off").submenu.item("95%").handlers["activate"](None)
     codex.item("Off").handlers["activate"](None)
-    assert w.load_config() == {"cutoff": {"Claude": 80}}
+    assert w.load_config() == {"cutoff": {"Claude": 95}}
     run_idle(gtk)  # re-rendered after the menu closes
-    assert "Stop Claude at: 80%" in linux_tray.ind.menu.labels()
+    assert "Stop Claude at: 95%" in linux_tray.ind.menu.labels()
 
 
 @pytest.fixture
@@ -420,17 +420,17 @@ def test_desktop_tray_render(desktop, monkeypatch):
 
 def test_desktop_tray_cutoff_menu(desktop):
     desktop._apply(sample_data())
-    w.update_config(cutoff={"Claude": 90})  # set elsewhere: picked up on the next fetch
+    w.update_config(cutoff={"Claude": 95})  # set elsewhere: picked up on the next fetch
     desktop._apply(sample_data())
-    assert {"Stop Claude at: 90%", "Stop Codex at: off", "Stop Bedrock at: off"} <= set(desktop.icon.menu.texts())
-    claude = desktop.icon.menu.item("Stop Claude at: 90%").action
-    assert claude.texts() == ["Off", "80%", "90%", "95%", "99%"]
-    assert [i.checked(i) for i in claude.items] == [False, False, True, False, False]
+    assert {"Stop Claude at: 95%", "Stop Codex at: off", "Stop Bedrock at: off"} <= set(desktop.icon.menu.texts())
+    claude = desktop.icon.menu.item("Stop Claude at: 95%").action
+    assert claude.texts() == ["Off", "95%"]  # Claude is at 92%
+    assert [i.checked(i) for i in claude.items] == [False, True]
     assert all(i.radio for i in claude.items)
-    desktop.icon.menu.item("Stop Codex at: off").action.item("99%").action()
+    desktop.icon.menu.item("Stop Codex at: off").action.item("85%").action()
     claude.item("Off").action()
-    assert w.load_config() == {"cutoff": {"Codex": 99}}
-    assert "Stop Codex at: 99%" in desktop.icon.menu.texts()  # menu rebuilt
+    assert w.load_config() == {"cutoff": {"Codex": 85}}
+    assert "Stop Codex at: 85%" in desktop.icon.menu.texts()  # menu rebuilt
 
 
 def test_desktop_tray_errors_and_stale(desktop):

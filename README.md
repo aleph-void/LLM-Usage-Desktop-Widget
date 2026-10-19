@@ -23,6 +23,12 @@ It reuses the logins that **Claude Code** (`claude`) and the **Codex CLI** (`cod
 on your machine, so there is nothing to configure. Credentials are only read, never modified, and each
 token is sent only to the provider that issued it.
 
+Direct JSON API requests require HTTPS and reject redirects. Azure pagination stays on
+`management.azure.com`; response sizes and pagination are bounded so a bad reply cannot grow
+memory or repeat requests indefinitely. Settings and billing caches are replaced atomically,
+with owner-only file permissions on Unix. Cached update links are validated before they reach
+the browser.
+
 | Provider | Credentials read from | Endpoint |
 |---|---|---|
 | Claude | macOS Keychain `Claude Code-credentials`, else `~/.claude/.credentials.json` (`$CLAUDE_CONFIG_DIR`) | `api.anthropic.com/api/oauth/usage` |

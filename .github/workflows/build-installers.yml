@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 # All actions run on the Node 24 runtime.
 
@@ -259,6 +259,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [test, linux-test, macos, windows]
     runs-on: ubuntu-26.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - name: Check tag matches __version__

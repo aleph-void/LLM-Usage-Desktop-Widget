@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -32,6 +33,7 @@ import signal
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -62,6 +64,10 @@ class Limit:
     percent: float | None  # None: an informational row (spend, token counts) with no bar
     resets_at: datetime | None = None
     severity: str = ""  # "normal" | "warning" | "critical"; derived from percent if empty
+
+    def __post_init__(self):
+        if self.percent is not None and not math.isfinite(self.percent):
+            raise ValueError("usage percentage must be finite")
 
     def level(self) -> str:
         if self.severity in ("warning", "critical"):
@@ -116,6 +122,37 @@ def _ssl_context() -> ssl.SSLContext:
 
 
 _SSL_CONTEXT: ssl.SSLContext | None = None
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_PAGES = 100
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # API URLs are fixed. Never forward bearer tokens or OAuth POST bodies elsewhere.
+        return None
+
+
+def _urlopen(req, timeout, context):
+    opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=context))
+    return opener.open(req, timeout=timeout)
+
+
+def _https_origin(url: str) -> tuple[str, int]:
+    parts = urllib.parse.urlsplit(url)
+    if (parts.scheme != "https" or not parts.hostname or parts.username is not None
+            or parts.password is not None or any(ord(c) <= 32 for c in url)):
+        raise ValueError("API URL must use HTTPS without user information or whitespace")
+    return parts.hostname, parts.port or 443
+
+
+def _read_response(resp, limit=MAX_RESPONSE_BYTES):
+    raw = resp.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError("API response exceeds size limit")
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("API response must be a JSON object")
+    return data
 
 
 def http_json(url: str, headers: dict[str, str], timeout: float = 20, body: dict | None = None,
@@ -126,6 +163,7 @@ def http_json(url: str, headers: dict[str, str], timeout: float = 20, body: dict
     HTTPStatusError carrying the API's own message, so callers can tell them apart.
     """
     global _SSL_CONTEXT
+    _https_origin(url)
     if _SSL_CONTEXT is None:
         _SSL_CONTEXT = _ssl_context()
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json", **headers}
@@ -138,14 +176,17 @@ def http_json(url: str, headers: dict[str, str], timeout: float = 20, body: dict
         headers["Content-Type"] = "application/x-www-form-urlencoded"
     req = urllib.request.Request(url, data=data, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
-            return json.load(resp)
+        with _urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
+            return _read_response(resp)
     except urllib.error.HTTPError as e:
-        if auth_errors and e.code in (401, 403):
-            raise AuthError(f"HTTP {e.code}: login rejected") from e
-        if auth_errors:
-            raise RuntimeError(f"HTTP {e.code}") from e
-        raise HTTPStatusError(e.code, _error_detail(e)) from e
+        try:
+            if auth_errors and e.code in (401, 403):
+                raise AuthError(f"HTTP {e.code}: login rejected") from e
+            if auth_errors:
+                raise RuntimeError(f"HTTP {e.code}") from e
+            raise HTTPStatusError(e.code, _error_detail(e)) from e
+        finally:
+            e.close()
     except urllib.error.URLError as e:
         raise RuntimeError(f"network: {e.reason}") from e
 
@@ -153,7 +194,7 @@ def http_json(url: str, headers: dict[str, str], timeout: float = 20, body: dict
 def _error_detail(e: urllib.error.HTTPError) -> str:
     """The message in a Google/Azure-style error body ({"error": {"message": ...}}), shortened."""
     try:
-        err = json.loads(e.read().decode("utf-8", "replace")).get("error")
+        err = _read_response(e, 64 * 1024).get("error")
     except (OSError, ValueError, AttributeError):
         return ""
     if isinstance(err, dict):
@@ -200,7 +241,8 @@ def parse_time(value) -> datetime | None:
     try:
         if isinstance(value, (int, float)):
             return datetime.fromtimestamp(float(value), tz=timezone.utc)
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        when = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return when if when.tzinfo is not None else when.replace(tzinfo=timezone.utc)
     except (ValueError, OSError, OverflowError):
         return None
 
@@ -284,7 +326,7 @@ def cloud_config_dirs() -> list[Path]:
 def _read_json(path: Path) -> dict | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -292,9 +334,18 @@ def _read_json(path: Path) -> dict | None:
 def _write_json(path: Path, data: dict) -> None:
     # Replace in one step so a sync client never uploads a half-written file.
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    # Exclusive creation avoids symlink clobbering and competing writers sharing a temp file.
+    # NamedTemporaryFile also gives local settings and billing caches owner-only permissions.
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".", suffix=".tmp", delete=False) as handle:
+            tmp = Path(handle.name)
+            json.dump(data, handle, indent=2)
+        os.replace(tmp, path)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 def _synced_paths(local: dict) -> list[Path]:
@@ -530,7 +581,7 @@ def codex_vertex_urls() -> list[str]:
 
 
 AZURE_HOST_RE = re.compile(r"^https?://([a-z0-9][a-z0-9-]*)\.(?:openai\.azure\.com|cognitiveservices\.azure\.com"
-                           r"|services\.ai\.azure\.com)", re.IGNORECASE)
+                           r"|services\.ai\.azure\.com)(?=[:/?#]|$)", re.IGNORECASE)
 
 
 def codex_azure_urls() -> list[str]:
@@ -631,25 +682,33 @@ def bedrock_settings() -> dict | None:
     }
 
 
+_CACHE_LOCK = threading.RLock()
+
+
+def _cache_entries(path: Path, now: float) -> dict:
+    cache = _read_json(path) or {}
+    return {k: v for k, v in cache.items() if isinstance(v, dict) and "value" in v
+            and isinstance(v.get("at"), (int, float)) and math.isfinite(v["at"])
+            and 0 <= now - v["at"] < 7 * 86400}
+
+
 def _cached(key: str, max_age: float, compute):
     """compute() at most once per max_age seconds, remembered in a file across restarts."""
     path = config_dir() / "cloud-cache.json"
-    try:
-        cache = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        cache = {}
     now = time.time()
-    entry = cache.get(key)
-    if isinstance(entry, dict) and 0 <= now - entry.get("at", 0) < max_age:
-        return entry["value"]
+    with _CACHE_LOCK:
+        entry = _cache_entries(path, now).get(key)
+        if entry is not None and now - entry["at"] < max_age:
+            return entry["value"]
     value = compute()
-    cache = {k: v for k, v in cache.items() if isinstance(v, dict) and now - v.get("at", 0) < 7 * 86400}
-    cache[key] = {"at": now, "value": value}
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(cache), encoding="utf-8")
-    except OSError:
-        pass
+    with _CACHE_LOCK:
+        # Re-read after the query: another provider may have populated its cache meanwhile.
+        cache = _cache_entries(path, time.time())
+        cache[key] = {"at": time.time(), "value": value}
+        try:
+            _write_json(path, cache)
+        except OSError:
+            pass
     return value
 
 
@@ -704,6 +763,7 @@ def _bedrock_month_cost(session) -> dict:
         "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
     }
     total, unit = 0.0, "USD"
+    seen = set()
     while True:
         resp = ce.get_cost_and_usage(**request)
         for period in resp.get("ResultsByTime", []):
@@ -714,7 +774,11 @@ def _bedrock_month_cost(session) -> dict:
                     unit = cost.get("Unit") or unit
         if not resp.get("NextPageToken"):
             return {"amount": total, "unit": unit}
-        request["NextPageToken"] = resp["NextPageToken"]
+        token = resp["NextPageToken"]
+        if token in seen or len(seen) >= MAX_PAGES - 1:
+            raise RuntimeError("Cost Explorer pagination did not finish within the page limit")
+        seen.add(token)
+        request["NextPageToken"] = token
 
 
 def _bedrock_tokens(session, region: str, since: datetime) -> dict:
@@ -734,7 +798,9 @@ def _bedrock_tokens(session, region: str, since: datetime) -> dict:
     totals = {"in": 0.0, "out": 0.0}
     pages = session.client("cloudwatch", region_name=region).get_paginator("get_metric_data").paginate(
         MetricDataQueries=queries, StartTime=since, EndTime=datetime.now(timezone.utc))
-    for page in pages:
+    for index, page in enumerate(pages):
+        if index >= MAX_PAGES:
+            raise RuntimeError("CloudWatch pagination did not finish within the page limit")
         for result in page.get("MetricDataResults", []):
             totals[result["Id"].rsplit("_", 1)[1]] += sum(result.get("Values", []))
     return totals
@@ -963,6 +1029,7 @@ def _vertex_tokens(headers: dict, project: str, since: datetime) -> dict:
     }
     url = f"https://monitoring.googleapis.com/v3/projects/{urllib.parse.quote(project)}/timeSeries?"
     totals = {"in": 0.0, "out": 0.0}
+    seen = set()
     while True:
         data = http_json(url + urllib.parse.urlencode(params), headers, auth_errors=False)
         for series in data.get("timeSeries", []):
@@ -973,7 +1040,11 @@ def _vertex_tokens(headers: dict, project: str, since: datetime) -> dict:
                     totals[key] += float(value.get("int64Value") or value.get("doubleValue") or 0)
         if not data.get("nextPageToken"):
             return totals
-        params["pageToken"] = data["nextPageToken"]
+        token = data["nextPageToken"]
+        if token in seen or len(seen) >= MAX_PAGES - 1:
+            raise RuntimeError("Monitoring pagination did not finish within the page limit")
+        seen.add(token)
+        params["pageToken"] = token
 
 
 def _vertex_month_cost(headers: dict, table: str, projects: list[str]) -> dict:
@@ -1143,7 +1214,13 @@ def _azure_token() -> tuple[str, str]:
 
 def _arm_list(headers: dict, path: str) -> list[dict]:
     url, items = ARM + path, []
+    seen = set()
     while url:
+        if _https_origin(url) != _https_origin(ARM):
+            raise ValueError("Azure pagination URL is outside Azure Resource Manager")
+        if url in seen or len(seen) >= MAX_PAGES:
+            raise RuntimeError("Azure pagination did not finish within the page limit")
+        seen.add(url)
         data = http_json(url, headers, auth_errors=False)
         items += data.get("value") or []
         url = data.get("nextLink")
@@ -1611,7 +1688,11 @@ def check_for_update() -> dict | None:
         _update_failed_at = time.time()
         return None
     if isinstance(latest, dict) and latest.get("url") and is_newer(latest.get("version")):
-        return latest
+        # Disk caches are input too; construct the browser destination from a validated version.
+        version = str(latest["version"]).strip().lstrip("v")
+        canonical = f"{REPO_URL}/releases/tag/v{version}"
+        url = latest["url"] if latest["url"] in (canonical, f"{REPO_URL}/releases/tag/{version}") else canonical
+        return {"version": version, "url": url}
     return None
 
 
@@ -1710,6 +1791,7 @@ class Widget:
         self.data: list[ProviderUsage] = []
         self.update: dict | None = None  # a newer release, from check_for_update()
         self.fetching = False
+        self.last_fetch = 0.0
 
         root = self.root = tk.Tk()
         root.title("LLM Usage")
@@ -1855,6 +1937,7 @@ class Widget:
 
     def _apply(self, results: list[ProviderUsage], update: dict | None = None):
         self.fetching = False
+        self.last_fetch = time.time()
         previous = {u.name: u for u in self.data}
         for u in results:
             # Keep the last good numbers on transient failures, flagged as stale.
@@ -1869,12 +1952,12 @@ class Widget:
     def _tick(self):
         # Poll on the configured interval; redraw countdowns every 30 s in between.
         now = time.time()
-        last = max((u.fetched_at for u in self.data), default=0)
+        last = max((u.fetched_at for u in self.data), default=self.last_fetch)
         if not self.fetching and now - last >= self.interval:
             self.refresh()
         elif self.data:
             self.render()
-        self.root.after(30_000 if self.data else 1_000, self._tick)
+        self.root.after(30_000 if self.last_fetch else 1_000, self._tick)
 
     # -- drawing -------------------------------------------------------------
 

@@ -158,7 +158,8 @@ jobs:
           retry spctl -a -vvv -t open --context context:primary-signature "$dmg"
           # Gatekeeper must accept the pkgs inside too: they carry no ticket of their own.
           mnt="$RUNNER_TEMP/dmg"
-          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg" >/dev/null
+          # hdiutil also fails now and then with "Resource busy" on the runners.
+          retry hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg" >/dev/null
           for pkg in "$mnt"/*.pkg; do
             retry spctl -a -vvv -t install "$pkg"
           done

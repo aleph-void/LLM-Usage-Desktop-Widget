@@ -176,6 +176,20 @@ def test_request_headers(logged_in, fake_http):
     assert headers["anthropic-beta"] == "oauth-2025-04-20"
 
 
+def test_usage_names_the_account(logged_in, home, fake_http):
+    fake_http.responses[USAGE_URL] = {}
+    assert w.fetch_claude().account == ""
+    (home / ".claude" / ".claude.json").write_text(json.dumps(
+        {"oauthAccount": {"accountUuid": "acc-1", "organizationUuid": "org-1"}}), encoding="utf-8")
+    assert w.fetch_claude().account == "acc-1/org-1"
+
+
+def test_account_read_from_home_without_claude_config_dir(monkeypatch, home):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "acc-2"}}), encoding="utf-8")
+    assert w.claude_account() == "acc-2"
+
+
 def test_login_without_expiry_is_used(home, fake_http):
     write_credentials(home, {"accessToken": "t"})
     fake_http.responses[USAGE_URL] = {}

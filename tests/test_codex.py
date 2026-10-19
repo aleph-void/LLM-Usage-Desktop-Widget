@@ -112,8 +112,13 @@ def test_request_headers(logged_in, fake_http):
 def test_no_account_header_without_account_id(home, fake_http):
     write_auth(home, {"tokens": {"access_token": "acc"}})
     fake_http.responses[USAGE_URL] = {}
-    w.fetch_codex()
+    assert w.fetch_codex().account == ""
     assert "ChatGPT-Account-Id" not in fake_http.calls[0][1]
+
+
+def test_usage_names_the_account(logged_in, fake_http):
+    fake_http.responses[USAGE_URL] = {}
+    assert w.fetch_codex().account == "acct-1"  # so a synced cutoff only applies to this account
 
 
 def test_full_response(logged_in, fake_http):

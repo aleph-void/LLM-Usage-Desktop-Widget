@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 import types
 from datetime import datetime, timedelta, timezone
 
@@ -46,6 +47,30 @@ def retry_tk_startup(monkeypatch):
                         raise
 
     monkeypatch.setattr(tk, "Tk", Tk)
+
+
+@pytest.fixture(scope="module")
+def shared_root(tk_available):
+    root = tk.Tk()
+    root.withdraw()
+    yield root
+    root.destroy()
+
+
+@pytest.fixture(autouse=True)
+def one_tk_on_macos(request, monkeypatch):
+    """The python.org macOS builds' Tk now and then segfaults in update() on a Tk created after an
+    earlier one was destroyed in the same process, so there every window the tests make is a
+    Toplevel of one hidden Tk that lives for the whole module."""
+    if sys.platform != "darwin":
+        yield
+        return
+    root = request.getfixturevalue("shared_root")
+    monkeypatch.setattr(tk, "Tk", lambda *args, **kwargs: tk.Toplevel(root))
+    yield
+    # A destroyed window's timers (the widget's _tick) would still fire in later tests.
+    for after_id in root.tk.splitlist(root.tk.call("after", "info")):
+        root.after_cancel(after_id)
 
 
 @pytest.fixture
@@ -191,10 +216,58 @@ def test_widget_restores_position(tk_available, inline_threads, monkeypatch):
         widget.quit()
 
 
+def menu_labels(menu) -> list[str]:
+    return [menu.entrycget(i, "label") for i in range(menu.index("end") + 1) if menu.type(i) != "separator"]
+
+
 def test_widget_menu(widget):
+    widget._build_menu()  # built on each popup
+    assert menu_labels(widget.menu) == ["Refresh now", "Always on top", "Stop Claude at: off", "Stop Codex at: off",
+                                        "Stop Bedrock at: off", "About", "Quit"]
+
+
+def test_widget_cutoff_menu(widget):
+    w.save_config({"cutoff": {"Codex": 90}, "bedrock": {"budget": "b"}})
+    widget.cfg = w.load_config()
+    widget._build_menu()
     menu = widget.menu
-    labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1) if menu.type(i) != "separator"]
-    assert labels == ["Refresh now", "Always on top", "About", "Quit"]
+    assert menu.entrycget(3, "label") == "Stop Codex at: 90%"
+    codex = widget.root.nametowidget(menu.entrycget(3, "menu"))
+    assert menu_labels(codex) == ["Off", "80%", "90%", "95%", "99%"]
+    assert widget.cutoff_vars[1].get() == 90
+    claude = widget.root.nametowidget(menu.entrycget(2, "menu"))
+    claude.invoke(3)  # 95%
+    codex.invoke(0)  # Off
+    assert w.load_config() == {"cutoff": {"Claude": 95}, "bedrock": {"budget": "b"}}
+    assert widget.cfg == w.load_config()
+    widget._build_menu()  # rebuilding doesn't pile up old submenus
+    assert len(widget.menu.winfo_children()) == 4  # three providers and About
+    assert widget.menu.entrycget(2, "label") == "Stop Claude at: 95%"
+
+
+def test_widget_reloads_settings_after_a_fetch(widget):
+    w.update_config(cutoff={"Claude": 99})  # e.g. changed on another computer; above the sample's 95%
+    widget.refresh()
+    widget.root.update()
+    assert widget.cfg["cutoff"] == {"Claude": 99}
+
+
+def test_widget_picks_up_a_reached_cutoff(widget, monkeypatch):
+    monkeypatch.setattr(w, "find_cli_processes", lambda: [])
+
+    def fresh():  # fetched now, so a _tick firing on a slow runner redraws instead of fetching again
+        results = sample()
+        for u in results:
+            u.fetched_at = time.time()
+        return results
+
+    monkeypatch.setattr(w, "fetch_all", fresh)
+    w.update_config(cutoff={"Claude": 90}, x=7)  # the sample's Claude is at 95%
+    widget.refresh()
+    widget.root.update()
+    assert "cutoff" not in widget.cfg  # cleared once reached, so a later drag can't save it back
+    assert widget.cfg["x"] == 7
+    assert any(t.startswith("⛔ Cutoff 90% reached") for t in texts(widget.body))
 
 
 # -- TaskbarStrip._draw ----------------------------------------------------------

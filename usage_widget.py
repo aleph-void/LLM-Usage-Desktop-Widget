@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import ssl
 import subprocess
 import sys
@@ -82,6 +83,7 @@ class ProviderUsage:
     error: str = ""
     fetched_at: float = 0.0
     summary: str = ""  # top-bar text when no limit has a percentage, e.g. "$12.34"
+    account: str = ""  # whose numbers these are, so a synced cutoff only applies to that account
 
 
 class AuthError(Exception):
@@ -242,21 +244,130 @@ def config_dir() -> Path:
     return base / APP_NAME
 
 
-def load_config() -> dict:
+# On macOS and Windows the settings sync between computers through iCloud Drive and
+# OneDrive, every one of them that is set up: config.json in each cloud folder holds
+# everything but these keys, which describe this computer, plus "saved_at", so the
+# newest copy wins and is copied to the others. A computer with both iCloud and
+# OneDrive thereby links a Mac on iCloud only with a PC on OneDrive only. The local
+# config.json keeps a full copy, used whenever no cloud folder is available.
+# "sync": false in the local file turns syncing off.
+LOCAL_ONLY_KEYS = ("x", "y", "taskbar_text", "sync", "cutoff_handled")
+
+
+def cloud_config_dirs() -> list[Path]:
+    """The iCloud Drive and OneDrive folders for synced settings, as many as are set up."""
+    home = Path.home()
+    roots = []
+    if sys.platform == "darwin":
+        roots.append(home / "Library" / "Mobile Documents" / "com~apple~CloudDocs")
+        try:  # OneDrive on macOS 12+, one folder per account: OneDrive-Personal, OneDrive-<Company>
+            roots += sorted(p for p in (home / "Library" / "CloudStorage").iterdir() if p.name.startswith("OneDrive"))
+        except OSError:
+            pass
+        roots.append(home / "OneDrive")  # older OneDrive versions
+    elif sys.platform == "win32":
+        roots += [Path(os.environ[v]) for v in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial")
+                  if os.environ.get(v)]
+        roots.append(home / "iCloudDrive")  # iCloud for Windows
+    found, seen = [], set()
+    for root in roots:
+        try:
+            if not root.is_dir() or root.resolve() in seen:  # the OneDrive variables often name one folder
+                continue
+            seen.add(root.resolve())
+        except OSError:
+            continue
+        found.append(root / APP_NAME)
+    return found
+
+
+def _read_json(path: Path) -> dict | None:
     try:
-        data = json.loads((config_dir() / "config.json").read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_json(path: Path, data: dict) -> None:
+    # Replace in one step so a sync client never uploads a half-written file.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _synced_paths(local: dict) -> list[Path]:
+    if local.get("sync", True) is False:
+        return []
+    # Skip a folder where iCloud hasn't downloaded the file yet, rather than overwrite it.
+    return [d / "config.json" for d in cloud_config_dirs() if not (d / ".config.json.icloud").exists()]
+
+
+def _shared(cfg: dict) -> dict:
+    return {k: v for k, v in cfg.items() if k not in LOCAL_ONLY_KEYS and k != "saved_at"}
+
+
+def _write_copies(paths: list[Path], content: dict) -> None:
+    """Write content to every cloud copy that differs, except ones that exist but can't be read (mid-sync)."""
+    for path in paths:
+        current = _read_json(path)
+        if current == content or (current is None and path.exists()):
+            continue
+        try:
+            _write_json(path, content)
+        except OSError:
+            pass
+
+
+def _newest_copy(paths: list[Path]) -> dict | None:
+    def age(item):
+        path, copy = item
+        saved = copy.get("saved_at")
+        try:
+            mtime = path.stat().st_mtime  # breaks ties, e.g. a copy edited by hand
+        except OSError:
+            mtime = 0.0
+        return (saved if isinstance(saved, (int, float)) else 0.0, mtime)
+
+    copies = [(p, c) for p, c in ((p, _read_json(p)) for p in paths) if c is not None]
+    return max(copies, key=age)[1] if copies else None
+
+
+def load_config() -> dict:
+    local = _read_json(config_dir() / "config.json") or {}
+    paths = _synced_paths(local)
+    if not paths:
+        return local
+    newest = _newest_copy(paths)
+    if newest is None:
+        if any(p.exists() for p in paths) or not _shared(local):
+            return local  # unreadable (mid-sync), or nothing to share yet: save_config creates the files
+        newest = {**_shared(local), "saved_at": time.time()}  # first run: start from this computer's settings
+    _write_copies(paths, newest)  # bring a cloud that missed a change up to date
+    return {**_shared(newest), **{k: local[k] for k in LOCAL_ONLY_KEYS if k in local}}
 
 
 def save_config(cfg: dict) -> None:
-    path = config_dir() / "config.json"
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        _write_json(config_dir() / "config.json", cfg)
     except OSError:
         pass
+    paths = _synced_paths(cfg)
+    shared = _shared(cfg)
+    copies = [_read_json(p) for p in paths]
+    # Don't touch the clouds for a window move, or create the folders with nothing to sync.
+    if all(c is not None and _shared(c) == shared for c in copies) or not (shared or any(p.exists() for p in paths)):
+        return
+    _write_copies(paths, {**shared, "saved_at": time.time()})
+
+
+def update_config(**changes) -> dict:
+    """Save these settings over a fresh read, so changes made elsewhere are kept; returns the config."""
+    cfg = load_config()
+    cfg.update(changes)
+    save_config(cfg)
+    return cfg
 
 
 def _truthy(value) -> bool:
@@ -294,6 +405,15 @@ def _claude_credentials() -> dict:
     if claude_uses_bedrock(env) or claude_uses_vertex(env) or claude_uses_foundry(env):
         raise NotUsed
     raise AuthError("not logged in — run `claude` and /login")
+
+
+def claude_account() -> str:
+    """Claude Code's signed-in account and organization, from its ~/.claude.json; "" if unknown."""
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    path = Path(cfg) / ".claude.json" if cfg else Path.home() / ".claude.json"
+    data = _read_json(path) or {}
+    acct = data.get("oauthAccount") if isinstance(data.get("oauthAccount"), dict) else {}
+    return "/".join(str(acct[k]) for k in ("accountUuid", "organizationUuid") if acct.get(k))
 
 
 def claude_code_env() -> dict[str, str]:
@@ -334,7 +454,7 @@ def fetch_claude() -> ProviderUsage:
         "https://api.anthropic.com/api/oauth/usage",
         {"Authorization": f"Bearer {creds['accessToken']}", "anthropic-beta": "oauth-2025-04-20"},
     )
-    usage = ProviderUsage("Claude", plan=str(creds.get("subscriptionType") or ""))
+    usage = ProviderUsage("Claude", plan=str(creds.get("subscriptionType") or ""), account=claude_account())
 
     if isinstance(data.get("limits"), list) and data["limits"]:
         names = {"session": "Session (5h)", "weekly_all": "Weekly"}
@@ -444,7 +564,7 @@ def fetch_codex() -> ProviderUsage:
     if tokens.get("account_id"):
         headers["ChatGPT-Account-Id"] = tokens["account_id"]
     data = http_json("https://chatgpt.com/backend-api/wham/usage", headers)
-    usage = ProviderUsage("Codex", plan=str(data.get("plan_type") or ""))
+    usage = ProviderUsage("Codex", plan=str(data.get("plan_type") or ""), account=str(tokens.get("account_id") or ""))
     _codex_windows("", data.get("rate_limit"), usage.limits)
     _codex_windows("Code review", data.get("code_review_rate_limit"), usage.limits)
     extra = data.get("additional_rate_limits")
@@ -641,6 +761,11 @@ def fetch_bedrock() -> ProviderUsage:
     regions = settings["regions"] or [session.region_name or "us-east-1"]
     usage = ProviderUsage("Bedrock")
     who = profile or "default"
+    try:  # the AWS account, so a synced cutoff only applies to it
+        usage.account = str(_cached(f"account:{who}", 86400,
+                                    lambda: session.client("sts").get_caller_identity()["Account"]))
+    except Exception:
+        pass
     month = datetime.now(timezone.utc).strftime("%Y-%m")
 
     def attempt(what, fn):
@@ -899,7 +1024,7 @@ def fetch_vertex() -> ProviderUsage:
         projects = [fallback] if fallback else []
     if not projects:
         raise RuntimeError('no Google Cloud project — set "projects" in the vertex section of config.json')
-    usage = ProviderUsage("Vertex")
+    usage = ProviderUsage("Vertex", account=",".join(sorted(projects)))
     attempt = _http_attempt(usage, f"Google login expired — run `{GCP_LOGIN}`")
     who = ",".join(projects)
     month = datetime.now(timezone.utc).strftime("%Y-%m")
@@ -1109,7 +1234,7 @@ def fetch_azure() -> ProviderUsage:
     token, cli_sub = _azure_token()
     headers = {"Authorization": f"Bearer {token}"}
     subscription = settings["subscription"] or cli_sub
-    usage = ProviderUsage("Azure")
+    usage = ProviderUsage("Azure", account=":".join(filter(None, (subscription, ",".join(settings["resources"])))))
     attempt = _http_attempt(usage, f"Azure login expired — run `{AZURE_LOGIN}`")
     month = datetime.now(timezone.utc).strftime("%Y-%m")
 
@@ -1183,6 +1308,229 @@ def fetch_all() -> list[ProviderUsage]:
         u.fetched_at = time.time()
         results.append(u)
     return results
+
+
+# --------------------------------------------------------------------------
+# Cutoff quotas: stop the CLIs before a limit runs out
+# --------------------------------------------------------------------------
+#
+# Each provider can have its own cutoff, a percentage of its fullest limit. The first
+# refresh that finds a provider at or over its cutoff stops the CLIs that draw on it
+# (Claude Code for Claude, the Codex CLI for Codex, whichever of the two runs on
+# the cloud for Bedrock, Vertex AI and Azure), then clears that cutoff so the CLIs can be started again.
+# With synced settings every computer signed in to the same account stops its own
+# CLIs; a cutoff set from the menu belongs to the account signed in there, so another
+# computer's different account is left alone. In config.json a number applies to any
+# account:
+#
+#     "cutoff": {"Claude": {"<account uuid>/<org uuid>": 95}, "Codex": 90, "Bedrock": 100}
+
+CUTOFF_CHOICES = (80, 90, 95, 99)
+CUTOFF_SYNC_WINDOW = 3600  # how long other computers act on a cutoff reached on one of them
+# npm-installed CLIs run as `node <script>`; these mark the script's package.
+CLI_PACKAGES = {"claude": "@anthropic-ai/claude-code/", "codex": "@openai/codex/"}
+SCRIPT_RUNTIMES = {"node", "bun", "deno"}
+# The Claude and Codex desktop apps have executables of the same names; leave them alone.
+DESKTOP_APP_PATHS = (".app/contents/", "/anthropicclaude/", "/windowsapps/")
+
+
+def cutoff_for(cfg: dict, name: str, account: str = "") -> float | None:
+    """The cutoff percentage set for this provider and account, or None if it has none.
+
+    A number applies to any account; {account: number} only to those accounts.
+    """
+    cutoffs = cfg.get("cutoff")
+    value = cutoffs.get(name) if isinstance(cutoffs, dict) else None
+    if isinstance(value, dict):
+        value = value.get(account) if account else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 0 < value <= 100 else None
+
+
+def _dict_setting(cfg: dict, key: str) -> dict:
+    value = cfg.get(key)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _put_cutoff(cfg: dict, name: str, account: str, value: float | None) -> None:
+    """Set (or with None, remove) a provider's cutoff for this account, or for any account without one."""
+    cutoffs = _dict_setting(cfg, "cutoff")
+    if account:
+        per_account = _dict_setting(cutoffs, name)  # an any-account number gives way to this one
+        per_account.pop(account, None)
+        if value:
+            per_account[account] = value
+        cutoffs[name] = per_account
+    elif value:
+        cutoffs[name] = value
+    else:
+        cutoffs.pop(name, None)
+    cutoffs = {k: v for k, v in cutoffs.items() if v != {}}
+    if cutoffs:
+        cfg["cutoff"] = cutoffs
+    else:
+        cfg.pop("cutoff", None)
+
+
+def set_cutoff(name: str, value: int | None, account: str = "") -> dict:
+    """Save a provider's cutoff for an account (None turns it off); returns the updated config."""
+    cfg = load_config()  # re-read so hand edits and other computers' changes are kept
+    _put_cutoff(cfg, name, account, value)
+    save_config(cfg)
+    return cfg
+
+
+def cutoff_menu_providers(data: list[ProviderUsage]) -> list[tuple[str, str]]:
+    """(provider, account) of each provider shown, whose cutoff the menu offers."""
+    return [(u.name, u.account) for u in data]
+
+
+def cutoff_menu_label(cfg: dict, name: str, account: str = "") -> str:
+    cutoff = cutoff_for(cfg, name, account)
+    return f"Stop {name} at: " + (f"{cutoff:.0f}%" if cutoff is not None else "off")
+
+
+def cutoff_clis(name: str) -> set[str]:
+    """The CLIs that draw on this provider's quota."""
+    if name == "Claude":
+        return {"claude"}
+    if name == "Codex":
+        return {"codex"}
+    claude, codex = {
+        "Bedrock": (claude_uses_bedrock, codex_bedrock_urls),
+        "Vertex": (claude_uses_vertex, codex_vertex_urls),
+        "Azure": (claude_uses_foundry, codex_azure_urls),
+    }.get(name, (None, None))
+    if claude is None:
+        return set()
+    return ({"claude"} if claude() else set()) | ({"codex"} if codex() else set())
+
+
+def cli_name(argv0: str, argv1: str = "") -> str | None:
+    """"claude" or "codex" when a command line runs that CLI, else None."""
+    path = argv0.replace("\\", "/")
+    if any(p in path.lower() for p in DESKTOP_APP_PATHS):
+        return None
+    exe = path.rsplit("/", 1)[-1]
+    if exe.lower().endswith(".exe"):
+        exe = exe[:-4].lower()  # Windows names are case-insensitive; elsewhere "Claude" is the desktop app
+    if exe in CLI_PACKAGES:
+        return exe
+    if exe.lower() in SCRIPT_RUNTIMES and argv1:
+        script = argv1.replace("\\", "/").lower()
+        base = script.rsplit("/", 1)[-1]
+        for name, package in CLI_PACKAGES.items():
+            if package in script or base in (name, name + ".js"):
+                return name
+    return None
+
+
+def _first_args(cmdline: str) -> tuple[str, str]:
+    """The first two arguments of a command line, honoring double quotes (Windows paths)."""
+    args = [a or b for a, b in re.findall(r'"([^"]*)"|(\S+)', cmdline)[:2]]
+    return (args + ["", ""])[0], (args + ["", ""])[1]
+
+
+def _process_command_lines() -> list[tuple[int, str, str]]:
+    """(pid, argv[0], argv[1]) of this user's processes."""
+    procs = []
+    if sys.platform == "win32":
+        names = " OR ".join(f"Name='{n}.exe'" for n in (*CLI_PACKAGES, *SCRIPT_RUNTIMES))
+        script = (f'Get-CimInstance Win32_Process -Filter "{names}" | '
+                  'ForEach-Object { "$($_.ProcessId)`t$($_.CommandLine)" }')
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                             capture_output=True, text=True, timeout=30,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        for line in out.splitlines():
+            pid, _, cmdline = line.partition("\t")
+            if pid.strip().isdigit() and cmdline.strip():
+                procs.append((int(pid), *_first_args(cmdline)))
+    elif os.path.isdir("/proc/self"):
+        uid = os.getuid()
+        for entry in os.scandir("/proc"):
+            if not entry.name.isdigit():
+                continue
+            try:
+                if entry.stat().st_uid != uid:
+                    continue
+                argv = (Path(entry.path) / "cmdline").read_bytes().split(b"\0")
+            except OSError:
+                continue  # exited meanwhile
+            argv = [a.decode(errors="replace") for a in argv] + ["", ""]
+            if argv[0]:
+                procs.append((int(entry.name), argv[0], argv[1]))
+    else:
+        out = subprocess.run(["ps", "-x", "-ww", "-o", "pid=,args="],
+                             capture_output=True, text=True, timeout=30).stdout
+        for line in out.splitlines():
+            pid, _, cmdline = line.strip().partition(" ")
+            if pid.isdigit():
+                procs.append((int(pid), *_first_args(cmdline)))
+    return procs
+
+
+def find_cli_processes() -> list[tuple[int, str]]:
+    """(pid, "claude" | "codex") for each running Claude Code / Codex CLI process."""
+    try:
+        procs = _process_command_lines()
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found = []
+    for pid, argv0, argv1 in procs:
+        name = cli_name(argv0, argv1)
+        if name and pid != os.getpid():
+            found.append((pid, name))
+    return found
+
+
+def stop_process(pid: int) -> bool:
+    try:
+        os.kill(pid, signal.SIGTERM)  # TerminateProcess on Windows
+    except OSError:
+        return False
+    return True
+
+
+def enforce_cutoffs(results: list[ProviderUsage]) -> None:
+    """Stop the CLIs of every provider at or over its cutoff, then clear that cutoff.
+
+    The cleared cutoff is recorded in "cutoff_reached", so other computers sharing the
+    settings stop their CLIs too: once, if they see it within CUTOFF_SYNC_WINDOW.
+    What happened is noted in the provider's limits.
+    """
+    cfg = load_config()
+    reached, handled = (_dict_setting(cfg, k) for k in ("cutoff_reached", "cutoff_handled"))
+    now = time.time()
+    todo = []  # (provider, cutoff, where it was reached)
+    for u in results:
+        cutoff = cutoff_for(cfg, u.name, u.account)
+        top = top_limit(u)
+        mark = reached.get(u.name)
+        if cutoff is not None and top is not None and top.percent >= cutoff:
+            _put_cutoff(cfg, u.name, u.account, None)
+            reached[u.name] = {"at": now, "cutoff": cutoff, "account": u.account}
+            handled[u.name] = now
+            todo.append((u, cutoff, ""))
+        elif (isinstance(mark, dict) and all(isinstance(mark.get(k), (int, float)) for k in ("at", "cutoff"))
+              and mark.get("account", "") == u.account  # another computer's other account is none of ours
+              and abs(now - mark["at"]) < CUTOFF_SYNC_WINDOW and handled.get(u.name) != mark["at"]):
+            handled[u.name] = mark["at"]
+            todo.append((u, float(mark["cutoff"]), " on another computer"))
+    if not todo:
+        return
+    running = find_cli_processes()
+    for u, cutoff, where in todo:
+        clis = cutoff_clis(u.name)
+        stopped = sum(stop_process(pid) for pid, name in running if name in clis)
+        what = " and ".join(sorted(clis)) or "CLI"
+        if stopped:
+            note = f"stopped {stopped} {what} process" + ("es" if stopped != 1 else "")
+        else:
+            note = f"no {what} running"
+        u.limits.append(Limit(f"⛔ Cutoff {cutoff:.0f}% reached{where} — {note}; cutoff cleared", None))
+    cfg["cutoff_reached"], cfg["cutoff_handled"] = reached, handled
+    save_config(cfg)
 
 
 # --------------------------------------------------------------------------
@@ -1274,15 +1622,7 @@ class Widget:
 
         self.menu = tk.Menu(root, tearoff=0)
         self.topmost_var = tk.BooleanVar(value=bool(self.cfg.get("topmost", True)))
-        self.menu.add_command(label="Refresh now", command=self.refresh)
-        self.menu.add_checkbutton(label="Always on top", variable=self.topmost_var, command=self._toggle_topmost)
-        about = tk.Menu(self.menu, tearoff=0)
-        about.add_command(label=f"LLM Usage Widget — Version {__version__}", state="disabled")
-        about.add_command(label=f"Source: {REPO_URL}", command=lambda: webbrowser.open(REPO_URL))
-        about.add_command(label=f"Aleph Void LLC: {LLC_URL}", command=lambda: webbrowser.open(LLC_URL))
-        self.menu.add_cascade(label="About", menu=about)
-        self.menu.add_separator()
-        self.menu.add_command(label="Quit", command=self.quit)
+        self.cutoff_vars: list = []
 
         self._bind_drag(root)
         self.refresh()
@@ -1292,9 +1632,6 @@ class Widget:
 
     def _load_config(self) -> dict:
         return load_config()
-
-    def _save_config(self) -> None:
-        save_config(self.cfg)
 
     # -- window behaviour -----------------------------------------------------
 
@@ -1319,19 +1656,47 @@ class Widget:
     def _drag_end(self, _e):
         if getattr(self, "_drag", None):
             self._drag = None
-            self.cfg["x"], self.cfg["y"] = self.root.winfo_x(), self.root.winfo_y()
-            self._save_config()
+            self.cfg = update_config(x=self.root.winfo_x(), y=self.root.winfo_y())
+
+    def _build_menu(self):
+        # Rebuilt on every popup so the cutoff entries follow the providers shown.
+        tk, menu = self.tk, self.menu
+        menu.delete(0, "end")
+        for child in menu.winfo_children():
+            child.destroy()
+        self.cutoff_vars = []
+        menu.add_command(label="Refresh now", command=self.refresh)
+        menu.add_checkbutton(label="Always on top", variable=self.topmost_var, command=self._toggle_topmost)
+        for name, account in cutoff_menu_providers(self.data):
+            cutoff = cutoff_for(self.cfg, name, account)
+            var = tk.IntVar(value=int(cutoff) if cutoff is not None else 0)
+            self.cutoff_vars.append(var)  # Tk forgets variables Python no longer references
+            sub = tk.Menu(menu, tearoff=0)
+            for value in (0, *CUTOFF_CHOICES):
+                sub.add_radiobutton(label=f"{value}%" if value else "Off", variable=var, value=value,
+                                    command=lambda n=name, a=account, v=value: self._set_cutoff(n, a, v))
+            menu.add_cascade(label=cutoff_menu_label(self.cfg, name, account), menu=sub)
+        about = tk.Menu(menu, tearoff=0)
+        about.add_command(label=f"LLM Usage Widget — Version {__version__}", state="disabled")
+        about.add_command(label=f"Source: {REPO_URL}", command=lambda: webbrowser.open(REPO_URL))
+        about.add_command(label=f"Aleph Void LLC: {LLC_URL}", command=lambda: webbrowser.open(LLC_URL))
+        menu.add_cascade(label="About", menu=about)
+        menu.add_separator()
+        menu.add_command(label="Quit", command=self.quit)
 
     def _popup(self, e):
+        self._build_menu()
         try:
             self.menu.tk_popup(e.x_root, e.y_root)
         finally:
             self.menu.grab_release()
 
+    def _set_cutoff(self, name: str, account: str, value: int):
+        self.cfg = set_cutoff(name, value or None, account)
+
     def _toggle_topmost(self):
-        self.cfg["topmost"] = self.topmost_var.get()
+        self.cfg = update_config(topmost=self.topmost_var.get())
         self.root.attributes("-topmost", self.cfg["topmost"])
-        self._save_config()
 
     def quit(self):
         self.root.destroy()
@@ -1346,6 +1711,7 @@ class Widget:
 
         def work():
             results = fetch_all()
+            enforce_cutoffs(results)
             self.root.after(0, lambda: self._apply(results))
 
         threading.Thread(target=work, daemon=True).start()
@@ -1357,8 +1723,9 @@ class Widget:
             # Keep the last good numbers on transient failures, flagged as stale.
             old = previous.get(u.name)
             if u.error and not u.limits and old and old.limits:
-                u.limits, u.plan = old.limits, old.plan
+                u.limits, u.plan, u.account = old.limits, old.plan, old.account
         self.data = results
+        self.cfg = self._load_config()  # a reached cutoff was cleared, or another computer changed a setting
         self.render()
 
     def _tick(self):
@@ -1521,6 +1888,7 @@ class Tray:
 
         def work():
             results = fetch_all()
+            enforce_cutoffs(results)
             self.GLib.idle_add(self._apply, results)
 
         threading.Thread(target=work, daemon=True).start()
@@ -1532,10 +1900,14 @@ class Tray:
         for u in results:
             old = previous.get(u.name)
             if u.error and not u.limits and old and old.limits:
-                u.limits, u.plan = old.limits, old.plan
+                u.limits, u.plan, u.account = old.limits, old.plan, old.account
         self.data = results
         self.render()
         return False
+
+    def _set_cutoff(self, _item, name: str, account: str, value: int):
+        set_cutoff(name, value or None, account)
+        self.GLib.idle_add(self.render)  # not from inside the menu's own signal handler
 
     def _tick(self):
         if not self.fetching and time.time() - self.last_fetch >= self.interval:
@@ -1601,6 +1973,19 @@ class Tray:
         for name, url in usage_pages(self.data).items():
             item = Gtk.MenuItem(label=f"Open {name} usage page")
             item.connect("activate", lambda _w, u=url: Gtk.show_uri_on_window(None, u, Gtk.get_current_event_time()))
+            menu.append(item)
+        cfg = load_config()
+        for name, account in cutoff_menu_providers(self.data):
+            cutoff = cutoff_for(cfg, name, account)
+            sub = Gtk.Menu()
+            for value in (0, *CUTOFF_CHOICES):
+                choice = Gtk.CheckMenuItem(label=f"{value}%" if value else "Off")
+                choice.set_draw_as_radio(True)
+                choice.set_active(value == (cutoff or 0))
+                choice.connect("activate", self._set_cutoff, name, account, value)
+                sub.append(choice)
+            item = Gtk.MenuItem(label=cutoff_menu_label(cfg, name, account))
+            item.set_submenu(sub)
             menu.append(item)
         about = Gtk.Menu()
         version = Gtk.MenuItem(label=f"LLM Usage Widget — Version {__version__}")
@@ -2008,10 +2393,17 @@ class DesktopTray:
             self._win32.PostMessage(hwnd, self._win32.WM_NOTIFY, 0, self._win32.WM_LBUTTONUP)
 
     def _toggle_taskbar_text(self):
-        cfg = load_config()  # re-read so hand edits (e.g. the cloud sections) are kept
-        cfg["taskbar_text"] = not self.cfg.get("taskbar_text", True)
-        save_config(cfg)
-        self.cfg = cfg
+        self.cfg = update_config(taskbar_text=not self.cfg.get("taskbar_text", True))
+
+    def _cutoff_action(self, name: str, account: str, value: int):
+        def action():
+            self.cfg = set_cutoff(name, value or None, account)
+            if sys.platform != "win32":  # on Windows the menu is rebuilt when it is opened
+                self._on_main(self._render)
+        return action
+
+    def _cutoff_checked(self, name: str, account: str, value: int):
+        return lambda _item: (cutoff_for(self.cfg, name, account) or 0) == value
 
     def _quit(self):
         if self.strip:
@@ -2053,6 +2445,11 @@ class DesktopTray:
         items.append(item("Refresh now", lambda: self.wake.set()))
         for name, url in usage_pages(self.data).items():
             items.append(item(f"Open {name} usage page", (lambda u: lambda: webbrowser.open(u))(url)))
+        for name, account in cutoff_menu_providers(self.data):
+            items.append(item(cutoff_menu_label(self.cfg, name, account), self.pystray.Menu(*(
+                item(f"{value}%" if value else "Off", self._cutoff_action(name, account, value),
+                     checked=self._cutoff_checked(name, account, value), radio=True)
+                for value in (0, *CUTOFF_CHOICES)))))
         if self.strip:
             items.append(item("Show usage on the taskbar", lambda: self._toggle_taskbar_text(),
                               checked=lambda _i: self.cfg.get("taskbar_text", True)))
@@ -2084,8 +2481,9 @@ class DesktopTray:
         for u in results:
             old = previous.get(u.name)
             if u.error and not u.limits and old and old.limits:
-                u.limits, u.plan = old.limits, old.plan
+                u.limits, u.plan, u.account = old.limits, old.plan, old.account
         self.data = results
+        self.cfg = load_config()  # a reached cutoff was cleared, or another computer changed a setting
         self._render()
 
     def _loop(self, icon):
@@ -2094,6 +2492,7 @@ class DesktopTray:
             if self.wake.is_set() or time.time() - self.last_fetch >= self.interval:
                 self.wake.clear()
                 results = fetch_all()
+                enforce_cutoffs(results)
                 self.last_fetch = time.time()
                 self._on_main(lambda r=results: self._apply(r))
             else:

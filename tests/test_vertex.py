@@ -309,6 +309,7 @@ def test_fetch_vertex_tokens_only(gcp_login):
     assert usage.name == "Vertex"
     assert [lim.label for lim in usage.limits] == ["Tokens today 2.0k in · 1.0k out"]
     assert usage.summary == "3.0k tok"
+    assert usage.account == "p1,p2"  # a synced cutoff applies to these projects only
     assert sorted(urllib.parse.urlsplit(u).path for u in gcp_login.urls(MONITORING)) == [
         "/v3/projects/p1/timeSeries", "/v3/projects/p2/timeSeries"]
     headers = gcp_login.calls[-1][1]

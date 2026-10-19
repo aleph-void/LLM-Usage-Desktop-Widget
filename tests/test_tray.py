@@ -62,6 +62,22 @@ class FakeSeparator(FakeMenuItem):
     pass
 
 
+class FakeCheckMenuItem(FakeMenuItem):
+    def __init__(self, label=None):
+        super().__init__(label)
+        self.active = False
+        self.radio = False
+
+    def set_draw_as_radio(self, value):
+        self.radio = value
+
+    def set_active(self, value):
+        self.active = value
+
+    def connect(self, signal, callback, *args):
+        self.handlers[signal] = lambda item: callback(item, *args)
+
+
 class FakeMenu:
     def __init__(self):
         self.items = []
@@ -111,7 +127,7 @@ class FakeIndicator:
 def gtk(monkeypatch):
     opened, timers, idle = [], [], []
     Gtk = types.SimpleNamespace(
-        Menu=FakeMenu, MenuItem=FakeMenuItem, SeparatorMenuItem=FakeSeparator,
+        Menu=FakeMenu, MenuItem=FakeMenuItem, SeparatorMenuItem=FakeSeparator, CheckMenuItem=FakeCheckMenuItem,
         show_uri_on_window=lambda win, uri, t: opened.append(uri), get_current_event_time=lambda: 0,
         main_quit=lambda: opened.append("quit"), main=lambda: None,
     )
@@ -190,6 +206,23 @@ def test_tray_menu_actions(linux_tray, gtk):
     about.items[1].handlers["activate"](None)
     menu.item("Quit").handlers["activate"](None)
     assert gtk.opened == [w.USAGE_PAGES["Codex"], w.REPO_URL, "quit"]
+
+
+def test_tray_cutoff_menu(linux_tray, gtk):
+    run_idle(gtk)
+    w.save_config({"cutoff": {"Codex": 95}})
+    linux_tray.render()
+    menu = linux_tray.ind.menu
+    assert {"Stop Claude at: off", "Stop Codex at: 95%", "Stop Bedrock at: off"} <= set(menu.labels())
+    codex = menu.item("Stop Codex at: 95%").submenu
+    assert codex.labels() == ["Off", "80%", "90%", "95%", "99%"]
+    assert [i.active for i in codex.items] == [False, False, False, True, False]
+    assert all(i.radio for i in codex.items)
+    menu.item("Stop Claude at: off").submenu.item("80%").handlers["activate"](None)
+    codex.item("Off").handlers["activate"](None)
+    assert w.load_config() == {"cutoff": {"Claude": 80}}
+    run_idle(gtk)  # re-rendered after the menu closes
+    assert "Stop Claude at: 80%" in linux_tray.ind.menu.labels()
 
 
 def test_tray_icon_levels(linux_tray, gtk):
@@ -274,8 +307,8 @@ def test_load_appindicator_without_pygobject(monkeypatch):
 # ==============================================================================
 
 class FakeItem:
-    def __init__(self, text, action, enabled=True, checked=None):
-        self.text, self.action, self.enabled, self.checked = text, action, enabled, checked
+    def __init__(self, text, action, enabled=True, checked=None, radio=False):
+        self.text, self.action, self.enabled, self.checked, self.radio = text, action, enabled, checked, radio
 
 
 class FakePystrayMenu:
@@ -346,6 +379,21 @@ def test_desktop_tray_render(desktop, monkeypatch):
     about = desktop.icon.menu.item("About").action
     about.item(f"Aleph Void LLC: {w.LLC_URL}").action()
     assert opened == [w.USAGE_PAGES["Claude"], w.USAGE_PAGES["Codex"], w.LLC_URL]
+
+
+def test_desktop_tray_cutoff_menu(desktop):
+    desktop._apply(sample_data())
+    w.update_config(cutoff={"Claude": 90})  # set elsewhere: picked up on the next fetch
+    desktop._apply(sample_data())
+    assert {"Stop Claude at: 90%", "Stop Codex at: off", "Stop Bedrock at: off"} <= set(desktop.icon.menu.texts())
+    claude = desktop.icon.menu.item("Stop Claude at: 90%").action
+    assert claude.texts() == ["Off", "80%", "90%", "95%", "99%"]
+    assert [i.checked(i) for i in claude.items] == [False, False, True, False, False]
+    assert all(i.radio for i in claude.items)
+    desktop.icon.menu.item("Stop Codex at: off").action.item("99%").action()
+    claude.item("Off").action()
+    assert w.load_config() == {"cutoff": {"Codex": 99}}
+    assert "Stop Codex at: 99%" in desktop.icon.menu.texts()  # menu rebuilt
 
 
 def test_desktop_tray_errors_and_stale(desktop):

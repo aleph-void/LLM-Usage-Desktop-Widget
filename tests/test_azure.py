@@ -297,6 +297,7 @@ def test_fetch_azure_full(az_login):
     assert tokens.label == "Tokens today 1.5k in · 500 out"
     assert usage.summary == "$42.00"
     assert w.summary_text([usage]) == "Azure 92%"
+    assert usage.account.endswith(":my-res,other")  # subscription and resources: a synced cutoff applies to them only
     assert all(headers == {"Authorization": "Bearer eyJ.tok"} for _, headers in az_login.calls)
 
 

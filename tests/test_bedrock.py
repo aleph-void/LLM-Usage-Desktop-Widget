@@ -325,6 +325,7 @@ def test_fetch_bedrock_full(bedrock_on, use_session):
     assert (month.label, month.percent) == ("This month $12.34", None)
     assert tokens.label == "Tokens today 3.0k in · 1.0k out"  # two regions summed
     assert w.top_limit(usage) is budget
+    assert usage.account == "123456789012"  # so a synced cutoff only applies to this AWS account
 
 
 def test_fetch_bedrock_uses_cache(bedrock_on, use_session):

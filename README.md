@@ -90,6 +90,10 @@ no API for text in the taskbar, so this is a small always-on-top window that fol
 aside for full-screen apps and an auto-hidden or vertical taskbar. Turn it off with *Show usage on the taskbar*
 in the menu. The tray icon may be tucked into the overflow (`^`) menu; drag it onto the taskbar to keep it visible.
 
+To keep the numbers out of sight, choose *Collapse to logo* in the menu: the top bar, menu bar or taskbar then
+shows only the Aleph Void logo (on Windows the taskbar text is hidden and the tray icon becomes the logo). The
+numbers are still in the menu; choose it again to bring them back.
+
 ### Running from source
 
 ```sh
@@ -143,7 +147,7 @@ iCloud Drive and OneDrive, in an `llm-usage-widget` folder. When a computer has 
 both, so it also links a Mac that only has iCloud with a PC that only has OneDrive; the most recently saved
 copy wins. This needs nothing but iCloud Drive (or iCloud for Windows) or OneDrive being signed in;
 otherwise the settings stay on this computer, and the first time the widget finds a cloud folder it copies
-them there. The window position and *Show usage on the taskbar* are per computer and are not synced. macOS
+them there. The window position, *Show usage on the taskbar* and *Collapse to logo* are per computer and are not synced. macOS
 may ask once whether the widget may access iCloud Drive or OneDrive.
 
 A full copy is also kept in the local `config.json`, which is used whenever no cloud folder is available.

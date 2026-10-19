@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-__version__ = "0.0.9"
+__version__ = "1.0.0"
 
 APP_NAME = "llm-usage-widget"
 USER_AGENT = f"llm-usage-widget/{__version__}"
@@ -251,7 +251,7 @@ def config_dir() -> Path:
 # OneDrive thereby links a Mac on iCloud only with a PC on OneDrive only. The local
 # config.json keeps a full copy, used whenever no cloud folder is available.
 # "sync": false in the local file turns syncing off.
-LOCAL_ONLY_KEYS = ("x", "y", "taskbar_text", "sync", "cutoff_handled")
+LOCAL_ONLY_KEYS = ("x", "y", "taskbar_text", "collapsed", "sync", "cutoff_handled")
 
 
 def cloud_config_dirs() -> list[Path]:
@@ -1977,6 +1977,28 @@ ICON_COLORS = {
     "critical": ("#ffffff", THEME["critical"], THEME["critical"]),
     "error": ("#ffffff", "#ffffff80", "#ffffff40"),
 }
+# "Collapse to logo" in the menu shows this instead of the numbers (a copy of assets/llm-usage-widget.svg).
+LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- The Aleph Void mark (alephvoid.com/assets/logo.svg) on the site's white, violet-edged tile. -->
+  <rect x="12" y="12" width="232" height="232" rx="48" fill="#ffffff" stroke="#6d28d9" stroke-width="8"/>
+  <path fill="#000000" d="M 69.5 49 L 64.2 54.2 L 60 61.6 L 60 64.7 L 59 65.8 L 60 75.2 L 62.1 78.4 L 62.1 80.5 L 64.2 82.6
+    L 67.4 88.9 L 71.6 93.1 L 71.6 94.1 L 87.3 109.9 L 89.4 110.9 L 89.4 112 L 76.8 120.4 L 65.3 131.9 L 60 142.4 L 60 154
+    L 65.3 164.5 L 65.3 166.6 L 67.4 169.7 L 67.4 172.9 L 68.4 173.9 L 68.4 176 L 65.3 183.4 L 61.1 187.6
+    L 61.1 193.9 L 62.1 196 L 99.9 196 L 105.2 186.5 L 106.2 178.1 L 105.2 177.1 L 105.2 173.9 L 103.1 168.7
+    L 97.8 161.3 L 85.2 147.7 L 81 139.3 L 81 133 L 84.2 126.7 L 89.4 121.4 L 94.7 118.3 L 96.8 118.3 L 132.5 155
+    L 132.5 156.1 L 138.8 162.4 L 138.8 163.4 L 152.4 179.2 L 165 197 L 168.2 196 L 173.4 190.7 L 176.6 185.5
+    L 176.6 183.4 L 177.6 182.3 L 177.6 169.7 L 172.4 160.3 L 156.6 142.4 L 152.4 136.1 L 151.4 130.9
+    L 150.3 129.8 L 150.3 117.2 L 151.4 116.2 L 151.4 112 L 152.4 110.9 L 153.5 104.6 L 155.6 100.4 L 161.9 94.1
+    L 168.2 94.1 L 169.2 95.2 L 171.3 95.2 L 173.4 97.3 L 175.5 96.2 L 175.5 92 L 176.6 91 L 176.6 68.9
+    L 174.5 64.7 L 168.2 60.5 L 158.7 59.5 L 157.7 57.4 L 156.6 58.4 L 147.2 57.4 L 143 55.3 L 139.8 52.1
+    L 139.8 47.9 L 137.7 47.9 L 132.5 54.2 L 129.3 61.6 L 129.3 67.9 L 128.3 68.9 L 129.3 80.5 L 131.4 84.7
+    L 135.6 88.9 L 139.8 91 L 143 91 L 144 93.1 L 145.1 92 L 149.3 92 L 150.3 93.1 L 150.3 95.2 L 146.1 99.4
+    L 141.9 105.7 L 141.9 107.8 L 139.8 110.9 L 139.8 114.1 L 138.8 115.1 L 138.8 120.4 L 137.7 121.4
+    L 135.6 121.4 L 96.8 80.5 L 96.8 79.4 L 91.5 74.2 L 91.5 73.1 L 81 60.5 L 74.7 51.1 L 73.7 47.9 Z"/>
+  <ellipse cx="192.3" cy="201.2" rx="4.73" ry="6.83" fill="none" stroke="#000000" stroke-width="1.89"/>
+</svg>
+"""
+COLLAPSE_LABEL = "Collapse to logo"
 
 
 def load_appindicator():
@@ -2012,6 +2034,7 @@ class Tray:
         self.icon_dir.mkdir(parents=True, exist_ok=True)
         for level, (c1, c2, c3) in ICON_COLORS.items():
             (self.icon_dir / f"llm-usage-{level}.svg").write_text(ICON_SVG.format(c1=c1, c2=c2, c3=c3))
+        (self.icon_dir / "llm-usage-logo.svg").write_text(LOGO_SVG)
 
         AI = appindicator
         self.ind = AI.Indicator.new(APP_NAME, "llm-usage-normal", AI.IndicatorCategory.APPLICATION_STATUS)
@@ -2055,6 +2078,10 @@ class Tray:
         set_cutoff(name, value or None, account)
         self.GLib.idle_add(self.render)  # not from inside the menu's own signal handler
 
+    def _toggle_collapsed(self, _item):
+        update_config(collapsed=not load_config().get("collapsed", False))
+        self.GLib.idle_add(self.render)
+
     def _tick(self):
         if not self.fetching and time.time() - self.last_fetch >= self.interval:
             self.refresh()
@@ -2079,8 +2106,13 @@ class Tray:
                 parts.append(f"{u.name} –")
         if self.data and not any(u.limits for u in self.data):
             worst = "error"
-        self.ind.set_label("  ".join(parts) if parts else "…", "")
-        self.ind.set_icon_full(f"llm-usage-{worst}", "LLM usage")
+        cfg = load_config()
+        if cfg.get("collapsed", False):
+            self.ind.set_label("", "")
+            self.ind.set_icon_full("llm-usage-logo", "LLM usage")
+        else:
+            self.ind.set_label("  ".join(parts) if parts else "…", "")
+            self.ind.set_icon_full(f"llm-usage-{worst}", "LLM usage")
         # Some top bars show the title as the icon's tooltip.
         self.ind.set_title("LLM Usage" + (f" — {update_label(self.update)}" if self.update else ""))
 
@@ -2128,7 +2160,6 @@ class Tray:
             item = Gtk.MenuItem(label=f"Open {name} usage page")
             item.connect("activate", lambda _w, u=url: Gtk.show_uri_on_window(None, u, Gtk.get_current_event_time()))
             menu.append(item)
-        cfg = load_config()
         for name, account, choices in cutoff_menu_providers(cfg, self.data):
             cutoff = cutoff_for(cfg, name, account)
             sub = Gtk.Menu()
@@ -2141,6 +2172,10 @@ class Tray:
             item = Gtk.MenuItem(label=cutoff_menu_label(cfg, name, account))
             item.set_submenu(sub)
             menu.append(item)
+        collapse = Gtk.CheckMenuItem(label=COLLAPSE_LABEL)
+        collapse.set_active(cfg.get("collapsed", False))
+        collapse.connect("activate", self._toggle_collapsed)
+        menu.append(collapse)
         about = Gtk.Menu()
         version = Gtk.MenuItem(label=f"LLM Usage Widget — Version {__version__}")
         version.set_sensitive(False)
@@ -2212,6 +2247,34 @@ def gauge_image(data: list[ProviderUsage], size: int = 64):
             color = THEME.get(name.lower(), THEME["normal"]) if level == "normal" else THEME[level]
             draw.rectangle((x0, size - gap - height, x1, size - gap), fill=color)
     return img
+
+
+def logo_image(size: int = 64):
+    """LOGO_SVG drawn with Pillow: one rounded tile, one straight-line path and one stroked ellipse."""
+    import xml.etree.ElementTree as ET
+    from PIL import Image, ImageDraw
+
+    supersample = 4  # Pillow's shapes aren't anti-aliased; draw big and scale down
+    s = size * supersample / 256  # the SVG is drawn on a 256 grid
+    svg = {el.tag.split("}")[1]: el.attrib for el in ET.fromstring(LOGO_SVG)}
+    img = Image.new("RGBA", (size * supersample,) * 2, (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+
+    # Tile: the SVG stroke is centred on the rect's edge; Pillow draws its outline inside the box.
+    r, half = svg["rect"], float(svg["rect"]["stroke-width"]) / 2
+    x, y, w, h = (float(r[k]) for k in ("x", "y", "width", "height"))
+    d.rounded_rectangle([(x - half) * s, (y - half) * s, (x + w + half) * s, (y + h + half) * s],
+                        radius=(float(r["rx"]) + half) * s, fill=r["fill"], outline=r["stroke"],
+                        width=max(1, round(float(r["stroke-width"]) * s)))
+    # Aleph: "M x y L x y ... Z".
+    p = svg["path"]
+    d.polygon([(float(a) * s, float(b) * s) for a, b in re.findall(r"([\d.]+) ([\d.]+)", p["d"])], fill=p["fill"])
+    # Subscript zero: a stroked ellipse.
+    e = svg["ellipse"]
+    cx, cy, rx, ry, sw = (float(e[k]) * s for k in ("cx", "cy", "rx", "ry", "stroke-width"))
+    d.ellipse([cx - rx - sw / 2, cy - ry - sw / 2, cx + rx + sw / 2, cy + ry + sw / 2],
+              outline=e["stroke"], width=max(1, round(sw)))
+    return img.resize((size, size), Image.LANCZOS)
 
 
 class TaskbarStrip:
@@ -2460,7 +2523,8 @@ class TaskbarStrip:
             self.placed = None
 
     def _update(self):
-        place = self._placement() if self.tray.cfg.get("taskbar_text", True) else None
+        cfg = self.tray.cfg
+        place = self._placement() if cfg.get("taskbar_text", True) and not cfg.get("collapsed", False) else None
         if place is None:
             self._hide()
             return
@@ -2550,6 +2614,10 @@ class DesktopTray:
     def _toggle_taskbar_text(self):
         self.cfg = update_config(taskbar_text=not self.cfg.get("taskbar_text", True))
 
+    def _toggle_collapsed(self):
+        self.cfg = update_config(collapsed=not self.cfg.get("collapsed", False))
+        self._on_main(self._render)
+
     def _cutoff_action(self, name: str, account: str, value: int):
         def action():
             self.cfg = set_cutoff(name, value or None, account)
@@ -2611,6 +2679,8 @@ class DesktopTray:
         if self.strip:
             items.append(item("Show usage on the taskbar", lambda: self._toggle_taskbar_text(),
                               checked=lambda _i: self.cfg.get("taskbar_text", True)))
+        items.append(item(COLLAPSE_LABEL, lambda: self._toggle_collapsed(),
+                          checked=lambda _i: self.cfg.get("collapsed", False)))
         items.append(item("About", self.pystray.Menu(
             item(f"LLM Usage Widget — Version {__version__}", None, enabled=False),
             item(f"Source: {REPO_URL}", lambda: webbrowser.open(REPO_URL)),
@@ -2621,7 +2691,8 @@ class DesktopTray:
 
     def _render(self):
         text = summary_text(self.data)
-        self.icon.icon = gauge_image(self.data)
+        collapsed = self.cfg.get("collapsed", False)
+        self.icon.icon = logo_image() if collapsed else gauge_image(self.data)
         tip = text or "LLM Usage"
         if self.update:
             tip += "\n" + update_label(self.update)
@@ -2632,7 +2703,7 @@ class DesktopTray:
             # Show the summary next to the icon, like the Linux top bar.
             try:
                 button = self.icon._status_item.button()
-                button.setTitle_(" " + text if text else "")
+                button.setTitle_(" " + text if text and not collapsed else "")
                 button.setImagePosition_(2)  # NSImageLeft
             except Exception:
                 pass

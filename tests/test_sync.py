@@ -58,13 +58,13 @@ def test_local_only_without_cloud_folder(pcs):
 
 
 def test_saves_shared_settings_to_the_cloud(pcs):
-    w.save_config({"cutoff": {"Claude": 90}, "x": 1, "y": 2, "taskbar_text": False, "topmost": False,
-                   "cutoff_handled": {"Claude": 5.0}})
+    w.save_config({"cutoff": {"Claude": 90}, "x": 1, "y": 2, "taskbar_text": False, "collapsed": True,
+                   "topmost": False, "cutoff_handled": {"Claude": 5.0}})
     assert read(pcs.icloud / "config.json") == {"cutoff": {"Claude": 90}, "topmost": False, "saved_at": 1000.0}
     assert read(pcs.local / "config.json")["x"] == 1  # full local copy as a fallback
     assert not (pcs.icloud / "config.json.tmp").exists()
     assert w.load_config() == {"cutoff": {"Claude": 90}, "topmost": False, "x": 1, "y": 2, "taskbar_text": False,
-                               "cutoff_handled": {"Claude": 5.0}}
+                               "collapsed": True, "cutoff_handled": {"Claude": 5.0}}
 
 
 def test_first_run_seeds_the_cloud_from_local_settings(pcs):

@@ -52,6 +52,18 @@ def test_app_svg_is_valid():
     assert root.tag.endswith("svg")
 
 
+def test_logo_matches_the_app_svg():
+    assert w.LOGO_SVG == (ROOT / "assets" / "llm-usage-widget.svg").read_text(encoding="utf-8")
+
+
+def test_logo_image():
+    pytest.importorskip("PIL")
+    img = w.logo_image(22)
+    assert img.size == (22, 22) and img.mode == "RGBA"
+    assert img.getpixel((0, 0))[3] == 0  # transparent outside the rounded tile
+    assert img.getpixel((11, 11))[3] == 255
+
+
 def test_theme_has_a_color_for_every_provider_and_level():
     for name, _ in w.PROVIDERS:
         assert name.lower() in w.THEME
@@ -67,7 +79,7 @@ def test_make_icon(tmp_path):
     (tmp_path / "packaging").mkdir()
     (tmp_path / "assets").mkdir()
     shutil.copy(ROOT / "packaging" / "make_icon.py", tmp_path / "packaging" / "make_icon.py")
-    shutil.copy(ROOT / "assets" / "llm-usage-widget.svg", tmp_path / "assets" / "llm-usage-widget.svg")
+    shutil.copy(ROOT / "usage_widget.py", tmp_path / "usage_widget.py")
     out = subprocess.run([sys.executable, str(tmp_path / "packaging" / "make_icon.py")], capture_output=True,
                          text=True, timeout=120, check=False)
     assert out.returncode == 0, out.stderr

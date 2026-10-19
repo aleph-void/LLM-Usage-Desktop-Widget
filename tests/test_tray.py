@@ -277,6 +277,22 @@ def test_tray_icon_levels(linux_tray, gtk):
     assert tray.ind.label == "Claude –  Codex –"
 
 
+def test_tray_collapse_to_logo(linux_tray, gtk):
+    run_idle(gtk)
+    tray = linux_tray
+    assert (w.config_dir() / "icons" / "llm-usage-logo.svg").read_text() == w.LOGO_SVG
+    item = tray.ind.menu.item(w.COLLAPSE_LABEL)
+    assert not item.active
+    item.handlers["activate"](item)
+    run_idle(gtk)  # re-rendered after the menu closes
+    assert w.load_config() == {"collapsed": True}
+    assert (tray.ind.label, tray.ind.icon) == ("", "llm-usage-logo")
+    assert tray.ind.menu.item(w.COLLAPSE_LABEL).active
+    tray.ind.menu.item(w.COLLAPSE_LABEL).handlers["activate"](None)
+    run_idle(gtk)
+    assert (tray.ind.label, tray.ind.icon) == ("Claude 92%  Codex 80%  Bedrock $5.00", "llm-usage-critical")
+
+
 def test_tray_keeps_stale_numbers(linux_tray, gtk):
     run_idle(gtk)
     tray = linux_tray
@@ -510,6 +526,21 @@ def test_desktop_tray_toggle_taskbar_text_keeps_other_settings(desktop):
     assert w.load_config() == {"bedrock": {"budget": "b"}, "taskbar_text": False}
     desktop._toggle_taskbar_text()
     assert w.load_config()["taskbar_text"] is True
+
+
+def test_desktop_tray_collapse_to_logo(desktop):
+    desktop._apply(sample_data())
+    gauge = desktop.icon.icon.tobytes()
+    item = desktop.icon.menu.item(w.COLLAPSE_LABEL)
+    assert not item.checked(item)
+    item.action()
+    assert w.load_config() == {"collapsed": True}
+    assert desktop.icon.icon.tobytes() == w.logo_image().tobytes()
+    assert desktop.icon.title == "Claude 92%  Codex 80%  Bedrock $5.00"  # the tooltip still has the numbers
+    item = desktop.icon.menu.item(w.COLLAPSE_LABEL)
+    assert item.checked(item)
+    item.action()
+    assert desktop.icon.icon.tobytes() == gauge
 
 
 def test_desktop_tray_windows_menu_on_any_click(pystray, monkeypatch):

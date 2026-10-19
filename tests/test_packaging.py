@@ -53,15 +53,28 @@ def test_app_svg_is_valid():
 
 
 def test_logo_matches_the_app_svg():
-    assert w.LOGO_SVG == (ROOT / "assets" / "llm-usage-widget.svg").read_text(encoding="utf-8")
+    def glyph(svg):
+        return [(el.tag.split("}")[1], el.attrib) for el in ET.fromstring(svg).iter() if el.tag.endswith(("path", "circle"))]
+
+    assert glyph(w.LOGO_SVG) == glyph((ROOT / "assets" / "llm-usage-widget.svg").read_text(encoding="utf-8"))
 
 
 def test_logo_image():
     pytest.importorskip("PIL")
     img = w.logo_image(22)
     assert img.size == (22, 22) and img.mode == "RGBA"
+    assert img.getpixel((0, 0))[3] == 0  # no tile: transparent around the glyph
+    assert img.getpixel((11, 11))[:3] == (255, 255, 255) and img.getpixel((11, 11))[3] > 200  # the diagonal
+    assert w.logo_image(22, "#000000").getpixel((11, 11))[:3] == (0, 0, 0)
+
+
+def test_app_icon_image():
+    pytest.importorskip("PIL")
+    img = w.app_icon_image(256)
+    assert img.size == (256, 256)
     assert img.getpixel((0, 0))[3] < 16  # transparent outside the rounded tile (give or take resampling)
-    assert img.getpixel((11, 11))[3] == 255
+    assert img.getpixel((20, 128)) == (0x6d, 0x28, 0xd9, 255)
+    assert img.getpixel((112, 124)) == (255, 255, 255, 255)  # the middle of the diagonal
 
 
 def test_theme_has_a_color_for_every_provider_and_level():

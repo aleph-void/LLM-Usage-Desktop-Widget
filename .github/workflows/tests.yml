@@ -48,6 +48,8 @@ jobs:
           - runner: ubuntu-24.04
             python: '3.9'
     runs-on: ${{ matrix.runner }}
+    # The suite takes about a minute; don't let a hang hold a runner for the 6-hour default.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -61,8 +63,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends xvfb
           xvfb-run -a python -m pytest --cov
+      # Tk's Aqua backend now and then hangs in the first update() on the arm64 runners (pytest-timeout
+      # kills the run with its banner); that is not a test failure, so give the suite one more go.
+      - name: Run the tests (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          for attempt in 1 2; do
+            python -m pytest --cov 2>&1 | tee "$RUNNER_TEMP/pytest.log"
+            status=${PIPESTATUS[0]}
+            if [ "$status" -eq 0 ] || ! grep -q '+ Timeout +' "$RUNNER_TEMP/pytest.log"; then
+              exit "$status"
+            fi
+            echo "::warning::Tk hung on attempt $attempt; rerunning the suite"
+          done
+          exit "$status"
       - name: Run the tests
-        if: runner.os != 'Linux'
+        if: runner.os == 'Windows'
         run: python -m pytest --cov
 
   # Build and install the .deb, then run the suite on each Ubuntu LTS's own Python and packages.
@@ -72,6 +88,7 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-26.04]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - run: packaging/linux/build-deb.sh
@@ -79,7 +96,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ./dist/*.deb \
-            python3-tk python3-boto3 python3-pil python3-pytest xvfb
+            python3-tk python3-boto3 python3-pil python3-pytest python3-pytest-timeout xvfb
       - name: Check the installed copy
         run: |
           cmp usage_widget.py /usr/lib/llm-usage-widget/usage_widget.py

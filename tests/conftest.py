@@ -16,6 +16,17 @@ sys.path.insert(0, str(ROOT))
 
 import usage_widget as w  # noqa: E402
 
+
+def pytest_report_header(config):
+    """Which Tcl/Tk the Tk tests run on; its Aqua build is the usual suspect when they hang on macOS."""
+    try:
+        import tkinter
+
+        tcl = tkinter.Tcl()  # a bare Tcl interpreter: no window, so nothing to hang or crash on
+        return f"tcl/tk: {tcl.eval('info patchlevel')} from {tcl.eval('info library')}"
+    except Exception as e:  # no tkinter at all, or a broken install
+        return f"tcl/tk: unavailable ({e})"
+
 # Environment variables the app reads; cleared so the developer's or runner's own logins never leak in.
 APP_ENV = (
     "CLAUDE_CONFIG_DIR", "CODEX_HOME", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BASE_URL",

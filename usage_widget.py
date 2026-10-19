@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 APP_NAME = "llm-usage-widget"
 USER_AGENT = f"llm-usage-widget/{__version__}"
@@ -1953,7 +1953,7 @@ class Widget:
 
 USAGE_PAGES = {
     "Claude": "https://claude.ai/settings/usage",
-    "Codex": "https://chatgpt.com/codex/settings/usage",
+    "Codex": "https://chatgpt.com/settings/usage?tab=overview",
     "Bedrock": "https://console.aws.amazon.com/costmanagement/home#/cost-explorer",
     "Vertex": "https://console.cloud.google.com/billing/reports",
     "Azure": "https://portal.azure.com/#view/Microsoft_Azure_CostManagement/Menu/~/costanalysis",

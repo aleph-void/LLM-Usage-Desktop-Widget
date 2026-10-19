@@ -106,6 +106,40 @@ usage_widget.py --once           # print usage in the terminal and exit
 usage_widget.py --interval 300   # refresh every 5 minutes (default 180 s, min 60 s)
 ```
 
+### Cutoff quotas
+
+Each provider can have its own cutoff: a percentage of its fullest limit at which the widget stops the
+CLIs that use that provider's quota. Choose one from *Stop Claude at* / *Stop Codex at* / *Stop Bedrock at*
+in the menu (Off, 80%, 90%, 95% or 99%), or set any value from 1 to 100 in `config.json`:
+
+```json
+"cutoff": {"Claude": 95, "Codex": 90, "Bedrock": 100}
+```
+
+On the first refresh that finds a provider at or over its cutoff, the widget stops every running process
+of that provider's CLI: `claude` for Claude, `codex` for Codex, and whichever of the two runs on Bedrock
+for Bedrock (Bedrock needs a `budget`, since that is its only limit with a percentage). The menu then
+shows `⛔ Cutoff 95% reached — stopped 2 claude processes; cutoff cleared`. The cutoff turns itself off
+once it is reached, so you can start the CLI again; set a new cutoff if you want another one. The Claude and
+Codex desktop apps are never stopped. Usage is only checked on each refresh (every 3 minutes by default),
+so a busy session can go a little past the cutoff before it is stopped.
+
+With [synced settings](#settings-sync), a cutoff set on one computer applies to all of them, and every
+computer stops its own CLIs when it is reached (if it is running the widget and sees that within an hour).
+
+### Settings sync
+
+On macOS and Windows the settings, including each provider's cutoff, sync between your computers through
+iCloud Drive (`iCloud Drive/llm-usage-widget/config.json`) or OneDrive (`OneDrive/llm-usage-widget/config.json`).
+This needs nothing but iCloud Drive or the OneDrive app being signed in; otherwise the settings stay on this
+computer, and the first time the widget finds the cloud folder it copies them there. The window position and
+*Show usage on the taskbar* are per computer and are not synced. macOS may ask once whether the widget may
+access iCloud Drive.
+
+A full copy is also kept in the local `config.json`, which is used whenever the cloud folder is unavailable.
+To edit settings by hand while syncing, edit the copy in the cloud folder. To stop syncing on one computer,
+add `"sync": false` to its local `config.json`. Uninstalling leaves the cloud copy in place.
+
 ### Expired logins
 
 Claude Code and Codex refresh their own tokens while you use them. If you haven't used one for a while,
@@ -212,7 +246,8 @@ Bedrock. The AWS profile and region come from the same place: `AWS_PROFILE` and 
 Code's `env` block, or the region in Codex's `base_url`. In that case the Claude or Codex section
 is hidden if that CLI has no subscription login. To override any of this, add a `bedrock` entry to
 `config.json` in the widget's config folder (`~/.config/llm-usage-widget/` on Linux,
-`~/Library/Application Support/llm-usage-widget/` on macOS, `%APPDATA%\llm-usage-widget\` on Windows):
+`~/Library/Application Support/llm-usage-widget/` on macOS, `%APPDATA%\llm-usage-widget\` on Windows;
+the [cloud folder](#settings-sync) when settings sync):
 
 ```json
 {

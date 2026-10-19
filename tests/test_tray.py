@@ -225,6 +225,34 @@ def test_tray_cutoff_menu(linux_tray, gtk):
     assert "Stop Claude at: 95%" in linux_tray.ind.menu.labels()
 
 
+def test_tray_credit_cutoff_menu(linux_tray, gtk):
+    run_idle(gtk)
+    linux_tray.render()
+    labels = linux_tray.ind.menu.labels()
+    assert not any(" at extra usage" in (lab or "") or " at credits left" in (lab or "") for lab in labels)
+    # Claude reports extra usage and Codex a credit balance: each gets a credit cutoff after its percentage.
+    linux_tray.data[0].credits = w.Credits(used=12.5, cap=50, unit="$", what="extra usage")
+    linux_tray.data[1].credits = w.Credits(left=42, what="credits left")
+    w.save_config({"credit_cutoff": {"Codex": 20}})
+    linux_tray.render()
+    menu = linux_tray.ind.menu
+    labels = menu.labels()
+    assert labels.index("Stop Claude at: off") + 1 == labels.index("Stop Claude at extra usage: off")
+    assert labels.index("Stop Codex at: off") + 1 == labels.index("Stop Codex at credits left: 20")
+    assert "Stop Bedrock at: off" in labels and not any("Stop Bedrock at " in (lab or "") for lab in labels)
+    claude = menu.item("Stop Claude at extra usage: off").submenu
+    assert claude.labels() == ["Off", "$15", "$20", "$30"]  # above $12.50 spent, below the $50 cap
+    codex = menu.item("Stop Codex at credits left: 20").submenu
+    assert codex.labels() == ["Off", "1", "1.5", "2", "3", "5", "7.5", "10", "15", "20", "30"]  # below 42 left
+    assert [i.active for i in codex.items] == [False] * 9 + [True, False]
+    assert all(i.radio for i in claude.items + codex.items)
+    claude.item("$20").handlers["activate"](None)
+    codex.item("Off").handlers["activate"](None)
+    assert w.load_config() == {"credit_cutoff": {"Claude": 20}}
+    run_idle(gtk)
+    assert "Stop Claude at extra usage: $20" in linux_tray.ind.menu.labels()
+
+
 @pytest.fixture
 def notify_send(monkeypatch):
     calls = []
@@ -447,6 +475,29 @@ def test_desktop_tray_cutoff_menu(desktop):
     claude.item("Off").action()
     assert w.load_config() == {"cutoff": {"Codex": 85}}
     assert "Stop Codex at: 85%" in desktop.icon.menu.texts()  # menu rebuilt
+
+
+def test_desktop_tray_credit_cutoff_menu(desktop):
+    desktop._apply(sample_data())
+    assert not any(" at extra usage" in t or " at credits left" in t for t in desktop.icon.menu.texts())
+    data = sample_data()
+    data[0].credits = w.Credits(used=3, unit="$", what="extra usage")  # no cap
+    data[1].credits = w.Credits(left=42, what="credits left")
+    desktop._apply(data)
+    texts = desktop.icon.menu.texts()
+    assert texts.index("Stop Claude at: off") + 1 == texts.index("Stop Claude at extra usage: off")
+    assert texts.index("Stop Codex at: off") + 1 == texts.index("Stop Codex at credits left: off")
+    claude = desktop.icon.menu.item("Stop Claude at extra usage: off").action
+    assert claude.texts() == ["Off", "$5", "$7.50", "$10", "$15", "$20", "$30", "$50", "$75", "$100"]
+    assert all(i.radio for i in claude.items)
+    claude.item("$7.50").action()
+    desktop.icon.menu.item("Stop Codex at credits left: off").action.item("10").action()
+    assert w.load_config() == {"credit_cutoff": {"Claude": 7.5, "Codex": 10}}
+    texts = desktop.icon.menu.texts()  # menu rebuilt
+    assert "Stop Claude at extra usage: $7.50" in texts and "Stop Codex at credits left: 10" in texts
+    claude = desktop.icon.menu.item("Stop Claude at extra usage: $7.50").action
+    assert [i.checked(i) for i in claude.items] == [False, False, True] + [False] * 7
+    assert [i.checked(i) for i in desktop.icon.menu.item("Stop Claude at: off").action.items][0]  # percent: off
 
 
 def test_desktop_tray_errors_and_stale(desktop):

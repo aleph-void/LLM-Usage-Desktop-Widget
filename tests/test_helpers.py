@@ -233,7 +233,7 @@ def test_http_json_success(monkeypatch):
         seen.update(url=req.full_url, headers=dict(req.header_items()), timeout=timeout, context=context)
         return FakeResponse(json.dumps({"ok": True}).encode())
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(w, "_urlopen", urlopen)
     assert w.http_json("https://example.test/x", {"Authorization": "Bearer t"}, timeout=5) == {"ok": True}
     assert seen["url"] == "https://example.test/x"
     assert seen["timeout"] == 5
@@ -251,7 +251,7 @@ def test_http_json_caller_headers_override_defaults(monkeypatch):
         seen.update(dict(req.header_items()))
         return FakeResponse(b"{}")
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(w, "_urlopen", urlopen)
     w.http_json("https://example.test", {"Accept": "text/plain"})
     assert seen["Accept"] == "text/plain"
 
@@ -261,7 +261,7 @@ def test_http_json_auth_errors(monkeypatch, code):
     def urlopen(req, timeout, context):
         raise urllib.error.HTTPError(req.full_url, code, "nope", {}, None)
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(w, "_urlopen", urlopen)
     with pytest.raises(w.AuthError, match=f"HTTP {code}"):
         w.http_json("https://example.test", {})
 
@@ -270,16 +270,43 @@ def test_http_json_other_http_error(monkeypatch):
     def urlopen(req, timeout, context):
         raise urllib.error.HTTPError(req.full_url, 503, "busy", {}, None)
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(w, "_urlopen", urlopen)
     with pytest.raises(RuntimeError, match="^HTTP 503$"):
         w.http_json("https://example.test", {})
+
+
+@pytest.mark.parametrize("code", [401, 403, 503])
+def test_http_json_status_without_response_body(monkeypatch, code):
+    def urlopen(req, timeout, context):
+        raise urllib.error.HTTPError(req.full_url, code, "no body", {}, None)
+
+    monkeypatch.setattr(w, "_urlopen", urlopen)
+    with pytest.raises(w.HTTPStatusError, match=f"^HTTP {code}$") as info:
+        w.http_json("https://example.test", {}, auth_errors=False)
+    assert info.value.code == code
+
+
+@pytest.mark.parametrize("auth_errors, code, expected", [
+    (True, 401, w.AuthError), (True, 403, w.AuthError), (True, 503, RuntimeError),
+    (False, 401, w.HTTPStatusError), (False, 503, w.HTTPStatusError),
+])
+def test_http_json_closes_error_response(monkeypatch, auth_errors, code, expected):
+    body = io.BytesIO(b'{"error": {"message": "denied"}}')
+
+    def urlopen(req, timeout, context):
+        raise urllib.error.HTTPError(req.full_url, code, "error", {}, body)
+
+    monkeypatch.setattr(w, "_urlopen", urlopen)
+    with pytest.raises(expected, match=f"HTTP {code}"):
+        w.http_json("https://example.test", {}, auth_errors=auth_errors)
+    assert body.closed
 
 
 def test_http_json_network_error(monkeypatch):
     def urlopen(req, timeout, context):
         raise urllib.error.URLError("name resolution failed")
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(w, "_urlopen", urlopen)
     with pytest.raises(RuntimeError, match="network: name resolution failed"):
         w.http_json("https://example.test", {})
 
@@ -311,7 +338,7 @@ def test_http_json_posts_json(monkeypatch):
         seen.update(method=req.get_method(), data=req.data, headers=dict(req.header_items()))
         return FakeResponse(b'{"ok": 1}')
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(w, "_urlopen", urlopen)
     assert w.http_json("https://example.test", {}, body={"q": "x"}) == {"ok": 1}
     assert seen["method"] == "POST"
     assert json.loads(seen["data"]) == {"q": "x"}
@@ -325,7 +352,7 @@ def test_http_json_posts_form(monkeypatch):
         seen.update(method=req.get_method(), data=req.data, headers=dict(req.header_items()))
         return FakeResponse(b"{}")
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(w, "_urlopen", urlopen)
     w.http_json("https://example.test", {}, form={"grant_type": "refresh_token", "a": "b c"})
     assert seen["method"] == "POST"
     assert seen["data"] == b"grant_type=refresh_token&a=b+c"
@@ -341,7 +368,7 @@ def http_error(code, body: bytes):
 
 @pytest.mark.parametrize("code", [401, 403, 404, 500])
 def test_http_json_without_auth_errors_raises_status(monkeypatch, code):
-    monkeypatch.setattr(urllib.request, "urlopen",
+    monkeypatch.setattr(w, "_urlopen",
                         http_error(code, b'{"error": {"code": 7, "message": "Permission  denied\\n on x"}}'))
     with pytest.raises(w.HTTPStatusError) as info:
         w.http_json("https://example.test", {}, auth_errors=False)
@@ -360,14 +387,14 @@ def test_http_json_without_auth_errors_raises_status(monkeypatch, code):
     (b"", ""),
 ])
 def test_error_detail(monkeypatch, body, detail):
-    monkeypatch.setattr(urllib.request, "urlopen", http_error(400, body))
+    monkeypatch.setattr(w, "_urlopen", http_error(400, body))
     with pytest.raises(w.HTTPStatusError) as info:
         w.http_json("https://example.test", {}, auth_errors=False)
     assert str(info.value) == "HTTP 400" + (f": {detail}" if detail else "")
 
 
 def test_error_detail_is_shortened(monkeypatch):
-    monkeypatch.setattr(urllib.request, "urlopen", http_error(400, json.dumps({"error": {"message": "x" * 200}}).encode()))
+    monkeypatch.setattr(w, "_urlopen", http_error(400, json.dumps({"error": {"message": "x" * 200}}).encode()))
     with pytest.raises(w.HTTPStatusError) as info:
         w.http_json("https://example.test", {}, auth_errors=False)
     detail = str(info.value).split(": ", 1)[1]

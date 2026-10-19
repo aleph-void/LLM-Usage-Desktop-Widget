@@ -69,6 +69,7 @@ def isolated(tmp_path, monkeypatch):
         raise AssertionError("tests must not touch the network")
 
     monkeypatch.setattr(urllib.request, "urlopen", no_network)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", no_network)
     # The macOS Keychain lookup: "not found" unless a test says otherwise.
     # A stand-in module so tests can swap w.subprocess.run without touching the real subprocess.
     fake_subprocess = types.SimpleNamespace(**{k: getattr(subprocess, k) for k in dir(subprocess)

@@ -626,8 +626,8 @@ def test_gauge_image_fill_and_colors():
     gap = 10
     width = (100 - gap * 4) // 3
     centers = [gap + i * (width + gap) + width // 2 for i in range(3)]
-    # Claude: half full, in its own color below the middle, track above.
-    assert img.getpixel((centers[0], 80))[:3] == rgb(w.THEME["claude"])
+    # Claude: half full, green below the middle, track above.
+    assert img.getpixel((centers[0], 80))[:3] == rgb(w.THEME["normal"])
     assert img.getpixel((centers[0], 20))[:3] == rgb(w.THEME["track"])
     # Codex: critical, nearly full.
     assert img.getpixel((centers[1], 20))[:3] == rgb(w.THEME["critical"])

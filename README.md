@@ -14,7 +14,7 @@ limits, and time until each resets) where your system status icons live:
 | Windows | An empty spot on the taskbar, plus a tray icon | `Claude 99%  Codex 13%` on the taskbar and a two-bar gauge icon; click either for details |
 
 The dropdown lists every limit with its percentage and reset countdown, plus *Refresh now*,
-links to each provider's usage page, and *Quit*. Bars and icons turn amber at 75% and red at 90%
+links to each provider's usage page, and *Quit*. Bars and icons are green below 70%, amber from 70% and red from 90%
 (or whatever severity the provider reports). If a refresh fails, the last numbers are kept and marked stale.
 
 There is also a floating always-on-top window (`--widget`) for desktops without a tray.

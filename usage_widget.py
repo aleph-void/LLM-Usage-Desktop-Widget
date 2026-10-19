@@ -1977,27 +1977,17 @@ ICON_COLORS = {
     "critical": ("#ffffff", THEME["critical"], THEME["critical"]),
     "error": ("#ffffff", "#ffffff80", "#ffffff40"),
 }
-# "Collapse to logo" in the menu shows this instead of the numbers (a copy of assets/llm-usage-widget.svg).
-LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <!-- The Aleph Void mark (alephvoid.com/assets/logo.svg) on the site's white, violet-edged tile. -->
-  <rect x="12" y="12" width="232" height="232" rx="48" fill="#ffffff" stroke="#6d28d9" stroke-width="8"/>
-  <path fill="#000000" d="M 69.5 49 L 64.2 54.2 L 60 61.6 L 60 64.7 L 59 65.8 L 60 75.2 L 62.1 78.4 L 62.1 80.5 L 64.2 82.6
-    L 67.4 88.9 L 71.6 93.1 L 71.6 94.1 L 87.3 109.9 L 89.4 110.9 L 89.4 112 L 76.8 120.4 L 65.3 131.9 L 60 142.4 L 60 154
-    L 65.3 164.5 L 65.3 166.6 L 67.4 169.7 L 67.4 172.9 L 68.4 173.9 L 68.4 176 L 65.3 183.4 L 61.1 187.6
-    L 61.1 193.9 L 62.1 196 L 99.9 196 L 105.2 186.5 L 106.2 178.1 L 105.2 177.1 L 105.2 173.9 L 103.1 168.7
-    L 97.8 161.3 L 85.2 147.7 L 81 139.3 L 81 133 L 84.2 126.7 L 89.4 121.4 L 94.7 118.3 L 96.8 118.3 L 132.5 155
-    L 132.5 156.1 L 138.8 162.4 L 138.8 163.4 L 152.4 179.2 L 165 197 L 168.2 196 L 173.4 190.7 L 176.6 185.5
-    L 176.6 183.4 L 177.6 182.3 L 177.6 169.7 L 172.4 160.3 L 156.6 142.4 L 152.4 136.1 L 151.4 130.9
-    L 150.3 129.8 L 150.3 117.2 L 151.4 116.2 L 151.4 112 L 152.4 110.9 L 153.5 104.6 L 155.6 100.4 L 161.9 94.1
-    L 168.2 94.1 L 169.2 95.2 L 171.3 95.2 L 173.4 97.3 L 175.5 96.2 L 175.5 92 L 176.6 91 L 176.6 68.9
-    L 174.5 64.7 L 168.2 60.5 L 158.7 59.5 L 157.7 57.4 L 156.6 58.4 L 147.2 57.4 L 143 55.3 L 139.8 52.1
-    L 139.8 47.9 L 137.7 47.9 L 132.5 54.2 L 129.3 61.6 L 129.3 67.9 L 128.3 68.9 L 129.3 80.5 L 131.4 84.7
-    L 135.6 88.9 L 139.8 91 L 143 91 L 144 93.1 L 145.1 92 L 149.3 92 L 150.3 93.1 L 150.3 95.2 L 146.1 99.4
-    L 141.9 105.7 L 141.9 107.8 L 139.8 110.9 L 139.8 114.1 L 138.8 115.1 L 138.8 120.4 L 137.7 121.4
-    L 135.6 121.4 L 96.8 80.5 L 96.8 79.4 L 91.5 74.2 L 91.5 73.1 L 81 60.5 L 74.7 51.1 L 73.7 47.9 Z"/>
-  <ellipse cx="192.3" cy="201.2" rx="4.73" ry="6.83" fill="none" stroke="#000000" stroke-width="1.89"/>
-</svg>
-"""
+# "Collapse to logo" in the menu shows this instead of the numbers: the Aleph Void mark, ℵ₀, as a
+# single-weight line glyph like the system's own tray icons. assets/llm-usage-widget.svg is the same
+# glyph on the app's violet tile.
+LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+<g fill="none" stroke="#ffffff" stroke-linecap="round">
+<path stroke-width="2.4" d="M4 3.5 C7.8 8.8 11.8 14 15.5 19"/>
+<path stroke-width="2.4" d="M8.6 9.8 C5.8 11.6 4.2 14.8 4.4 19.5"/>
+<path stroke-width="2.4" d="M11.4 13.4 C15.6 12.6 17.6 9 16.6 3.6"/>
+<circle stroke-width="1.4" cx="19.6" cy="20.2" r="1.6"/>
+</g>
+</svg>"""
 COLLAPSE_LABEL = "Collapse to logo"
 
 
@@ -2249,32 +2239,62 @@ def gauge_image(data: list[ProviderUsage], size: int = 64):
     return img
 
 
-def logo_image(size: int = 64):
-    """LOGO_SVG drawn with Pillow: one rounded tile, one straight-line path and one stroked ellipse."""
+def logo_image(size: int = 64, color: str = "#ffffff"):
+    """LOGO_SVG drawn with Pillow in one color: three round-capped cubic strokes and a ring."""
     import xml.etree.ElementTree as ET
     from PIL import Image, ImageDraw
 
-    supersample = 4  # Pillow's shapes aren't anti-aliased; draw big and scale down
-    s = size * supersample / 256  # the SVG is drawn on a 256 grid
-    svg = {el.tag.split("}")[1]: el.attrib for el in ET.fromstring(LOGO_SVG)}
-    img = Image.new("RGBA", (size * supersample,) * 2, (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
+    supersample = 8  # Pillow's shapes aren't anti-aliased; draw big and scale down
+    big = size * supersample
+    s = big / 24  # the SVG is drawn on a 24 grid
+    mask = Image.new("L", (big, big), 0)
+    d = ImageDraw.Draw(mask)
+    for el in ET.fromstring(LOGO_SVG).iter():
+        tag, a = el.tag.split("}")[1], el.attrib
+        if tag == "path":  # "M x y C x y x y x y"
+            x0, y0, x1, y1, x2, y2, x3, y3 = (float(n) * s for n in re.findall(r"[\d.]+", a["d"]))
+            pts = [((1 - t) ** 3 * x0 + 3 * (1 - t) ** 2 * t * x1 + 3 * (1 - t) * t * t * x2 + t ** 3 * x3,
+                    (1 - t) ** 3 * y0 + 3 * (1 - t) ** 2 * t * y1 + 3 * (1 - t) * t * t * y2 + t ** 3 * y3)
+                   for t in (i / 48 for i in range(49))]
+            w = float(a["stroke-width"]) * s
+            d.line(pts, fill=255, width=round(w), joint="curve")
+            for x, y in (pts[0], pts[-1]):  # round caps
+                d.ellipse([x - w / 2, y - w / 2, x + w / 2, y + w / 2], fill=255)
+        elif tag == "circle":
+            cx, cy, r, w = (float(a[k]) * s for k in ("cx", "cy", "r", "stroke-width"))
+            d.ellipse([cx - r - w / 2, cy - r - w / 2, cx + r + w / 2, cy + r + w / 2], outline=255, width=round(w))
+    img = Image.new("RGBA", (size, size), color)
+    img.putalpha(mask.resize((size, size), Image.LANCZOS))
+    return img
 
-    # Tile: the SVG stroke is centred on the rect's edge; Pillow draws its outline inside the box.
-    r, half = svg["rect"], float(svg["rect"]["stroke-width"]) / 2
-    x, y, w, h = (float(r[k]) for k in ("x", "y", "width", "height"))
-    d.rounded_rectangle([(x - half) * s, (y - half) * s, (x + w + half) * s, (y + h + half) * s],
-                        radius=(float(r["rx"]) + half) * s, fill=r["fill"], outline=r["stroke"],
-                        width=max(1, round(float(r["stroke-width"]) * s)))
-    # Aleph: "M x y L x y ... Z".
-    p = svg["path"]
-    d.polygon([(float(a) * s, float(b) * s) for a, b in re.findall(r"([\d.]+) ([\d.]+)", p["d"])], fill=p["fill"])
-    # Subscript zero: a stroked ellipse.
-    e = svg["ellipse"]
-    cx, cy, rx, ry, sw = (float(e[k]) * s for k in ("cx", "cy", "rx", "ry", "stroke-width"))
-    d.ellipse([cx - rx - sw / 2, cy - ry - sw / 2, cx + rx + sw / 2, cy + ry + sw / 2],
-              outline=e["stroke"], width=max(1, round(sw)))
-    return img.resize((size, size), Image.LANCZOS)
+
+def app_icon_image(size: int = 1024):
+    """The app icon: the logo in white on a violet rounded tile, as in assets/llm-usage-widget.svg."""
+    from PIL import Image, ImageDraw
+
+    supersample = 4
+    big = size * supersample
+    s = big / 256  # the app SVG is drawn on a 256 grid
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    ImageDraw.Draw(img).rounded_rectangle([12 * s, 12 * s, 244 * s, 244 * s], radius=52 * s, fill="#6d28d9")
+    img = img.resize((size, size), Image.LANCZOS)
+    glyph = logo_image(round(size * 168 / 256))  # the SVG's scale(7) of the 24 grid
+    offset = (size - glyph.width) // 2
+    img.alpha_composite(glyph, (offset, offset))
+    return img
+
+
+def taskbar_is_light() -> bool:
+    """Windows: whether the taskbar uses the light theme, where a white icon would vanish."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            return winreg.QueryValueEx(key, "SystemUsesLightTheme")[0] == 1
+    except OSError:
+        return False
 
 
 class TaskbarStrip:
@@ -2284,9 +2304,12 @@ class TaskbarStrip:
     always-on-top window kept over the taskbar's empty space: next to the tray when there
     is room, else in another gap (found with UI Automation), on two stacked lines if that
     is what fits. It follows the taskbar's theme and layout, steps aside for full-screen
-    apps and an auto-hidden taskbar, and opens the tray menu when clicked. Runs on the
-    main thread.
+    apps and an auto-hidden taskbar, and opens the tray menu when clicked. With "Collapse to
+    logo" it shows the logo instead of the numbers, so the app stays on the taskbar even when
+    Windows has tucked the tray icon into the overflow menu. Runs on the main thread.
     """
+
+    LOGO = "logo"  # what _update passes as the parts when collapsed
 
     TICK_MS = 500  # how often to re-check position and z-order
     LAYOUT_MS = 2000  # how often to re-read where the taskbar's buttons are (a cross-process query)
@@ -2458,8 +2481,10 @@ class TaskbarStrip:
         return parts or [("LLM usage", "…", "muted")]
 
     def _width(self, parts, layout: str) -> int:
-        font, bold = self.fonts[layout]
         pad = self.pad
+        if parts == self.LOGO:
+            return self._logo_size() + 2 * pad
+        font, bold = self.fonts[layout]
         if layout == "line":
             return sum(font.measure(n) + pad // 2 + bold.measure(v) for n, v, _ in parts) + 2 * pad * len(parts)
         return max(font.measure(n) for n, _, _ in parts) + pad + max(bold.measure(v) for _, v, _ in parts) + 2 * pad
@@ -2471,6 +2496,9 @@ class TaskbarStrip:
                 if b - a >= self._width(parts, layout) + 2 * margin:
                     return layout, b - margin
         return None
+
+    def _logo_size(self) -> int:
+        return 4 * self.pad  # 16pt, the size of the tray's own icons
 
     def _draw(self, bg: str, parts, layout: str):
         key = (bg, tuple(parts), layout)
@@ -2491,6 +2519,11 @@ class TaskbarStrip:
         self.inner.configure(bg=bg)
         font, bold = self.fonts[layout]
         pad = self.pad
+        if parts == self.LOGO:
+            from PIL import ImageTk
+            self.photo = ImageTk.PhotoImage(logo_image(self._logo_size(), fg))  # Tk doesn't keep a reference
+            tk.Label(self.inner, image=self.photo, bg=bg, padx=pad, pady=0, bd=0).pack()
+            parts = []
         for i, (name, value, level) in enumerate(parts):
             name_label = tk.Label(self.inner, text=name, font=font, fg=fg, bg=bg, padx=0, pady=0, bd=0)
             value_label = tk.Label(self.inner, text=value, font=bold, fg=colors[level], bg=bg, padx=0, pady=0, bd=0)
@@ -2501,28 +2534,6 @@ class TaskbarStrip:
                 name_label.grid(row=i, column=0, sticky="w", padx=(pad, pad))
                 value_label.grid(row=i, column=1, sticky="e", padx=(0, pad))
         for w in [self.frame, self.inner, *self.inner.winfo_children()]:
-            w.bind("<ButtonRelease-1>", self._click)
-            w.bind("<ButtonRelease-3>", self._click)
-
-    def _draw_logo(self, bg: str, size: int):
-        """"Collapse to logo": the logo in place of the numbers, still clickable for the menu."""
-        key = (bg, "logo", size)
-        if key == self.shown_key:
-            return
-        import base64
-        import io
-
-        self.shown_key, self.bg = key, bg
-        png = io.BytesIO()
-        logo_image(size).save(png, format="PNG")
-        self.logo = self.tk.PhotoImage(data=base64.b64encode(png.getvalue()))  # Tk keeps no reference of its own
-        for child in self.inner.winfo_children():
-            child.destroy()
-        self.frame.configure(bg=bg)
-        self.inner.configure(bg=bg)
-        label = self.tk.Label(self.inner, image=self.logo, bg=bg, padx=0, pady=0, bd=0)
-        label.pack(padx=self.pad)
-        for w in (self.frame, self.inner, label):
             w.bind("<ButtonRelease-1>", self._click)
             w.bind("<ButtonRelease-3>", self._click)
 
@@ -2556,25 +2567,14 @@ class TaskbarStrip:
         if self.spans is None or now - self.spans_at >= self.LAYOUT_MS / 1000:
             self.spans, self.spans_at = self._free_spans(taskbar, tb, tray_left), now
         margin = (bottom - top) // 8
-        if cfg.get("collapsed", False):
-            # Keep the strip, as the logo: hidden, the tray icon (often in the overflow) would
-            # be the only way back to the menu to turn this off.
-            size = bottom - top - 2 * margin
-            edge = next((b - margin for a, b in self.spans if b - a >= size + 2 * self.pad + 2 * margin), None)
-            choice = None if edge is None else ("logo", edge)
-        else:
-            parts = self._parts()
-            choice = self._choose(parts, self.spans, margin)
+        parts = self.LOGO if cfg.get("collapsed", False) else self._parts()
+        choice = self._choose(parts, self.spans, margin)
         if choice is None:
             self._hide()  # the taskbar is full; the tray icon still has the numbers
             return
         layout, edge = choice
         # The pixel sampled is in the margin right of the strip, never under it or a button.
-        bg = self._taskbar_color(edge + margin // 2, top + 2)
-        if layout == "logo":
-            self._draw_logo(bg, size)
-        else:
-            self._draw(bg, parts, layout)
+        self._draw(self._taskbar_color(edge + margin // 2, top + 2), parts, layout)
         self.root.update_idletasks()
         w = self.inner.winfo_reqwidth()
         geom = (w, bottom - top - 2 * margin, edge - w, top + margin)
@@ -2725,7 +2725,12 @@ class DesktopTray:
     def _render(self):
         text = summary_text(self.data)
         collapsed = self.cfg.get("collapsed", False)
-        self.icon.icon = logo_image() if collapsed else gauge_image(self.data)
+        if collapsed:
+            # Black on macOS, where it is marked as a template image below so the menu bar tints it.
+            dark = sys.platform == "darwin" or taskbar_is_light()
+            self.icon.icon = logo_image(color="#000000" if dark else "#ffffff")
+        else:
+            self.icon.icon = gauge_image(self.data)
         tip = text or "LLM Usage"
         if self.update:
             tip += "\n" + update_label(self.update)
@@ -2738,6 +2743,7 @@ class DesktopTray:
                 button = self.icon._status_item.button()
                 button.setTitle_(" " + text if text and not collapsed else "")
                 button.setImagePosition_(2)  # NSImageLeft
+                button.image().setTemplate_(collapsed)
             except Exception:
                 pass
 

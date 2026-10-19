@@ -63,6 +63,7 @@ def test_width():
     assert strip._width(PARTS, "line") == 68 + 61 + 16
     # stacked: widest name + pad + widest value + 2*pad
     assert strip._width(PARTS, "stacked") == 6 * 6 + 4 + 3 * 7 + 8
+    assert strip._width(w.TaskbarStrip.LOGO, "line") == 4 * 4 + 2 * 4
 
 
 def test_choose_prefers_one_line_next_to_tray():
@@ -289,25 +290,21 @@ def test_update_hidden_when_turned_off():
 
 
 def test_update_shows_the_logo_when_collapsed():
-    # Hiding the strip left only the tray icon, often in the overflow, to turn this back off.
-    positions = []
     strip = make_strip(
         [w.ProviderUsage("Claude", limits=[w.Limit("s", 50)])],
         root=FakeRoot(), placed=None, spans=None, spans_at=0.0,
-        inner=types.SimpleNamespace(winfo_reqwidth=lambda: 44),
-        user32=types.SimpleNamespace(SetWindowPos=lambda *a: positions.append(a)),
+        inner=types.SimpleNamespace(winfo_reqwidth=lambda: 24),
+        user32=types.SimpleNamespace(SetWindowPos=lambda *a: None),
     )
     strip.tray.cfg["collapsed"] = True
     strip._placement = lambda: (1, TASKBAR, 1650)
     drawn = []
-    strip._draw = lambda *a: pytest.fail("should not draw the numbers")
-    strip._draw_logo = lambda bg, size: drawn.append((bg, size))
+    strip._draw = lambda bg, parts, layout: drawn.append((bg, parts, layout))
     strip._taskbar_color = lambda x, y: "#202020"
     strip._update()
-    margin = 48 // 8
-    assert drawn == [("#202020", 48 - 2 * margin)]
-    assert strip.root.state() == "normal"
-    assert strip.root.geometries == [f"44x{48 - 2 * margin}+{1650 - margin - 44}+{1040 + margin}"]
+    assert drawn == [("#202020", w.TaskbarStrip.LOGO, "line")]
+    assert strip.root.state() == "normal"  # still on the taskbar
+
 
 
 def test_update_collapsed_hides_when_taskbar_full():
@@ -325,7 +322,6 @@ def test_update_collapsed_hidden_when_turned_off():
     strip._placement = lambda: pytest.fail("should not look for the taskbar")
     strip._update()
     assert strip.root.state() == "withdrawn"
-
 
 def test_update_places_the_strip():
     positions = []

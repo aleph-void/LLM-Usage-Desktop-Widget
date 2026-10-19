@@ -3,7 +3,6 @@
     python3 -m unittest discover -s tests -v
 """
 
-import json
 import os
 import shutil
 import subprocess
@@ -16,8 +15,6 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import usage_widget as w  # noqa: E402
-
-CLOUD_CONFIG_DIR = w.cloud_config_dir  # the real one; TempConfig replaces it
 
 
 def usage(name, *percents, error=""):
@@ -32,8 +29,8 @@ class TempConfig(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         self.local = self.root / "local"
-        self.cloud = None
-        for name, fn in (("config_dir", lambda: self.local), ("cloud_config_dir", lambda: self.cloud)):
+        self.clouds = []
+        for name, fn in (("config_dir", lambda: self.local), ("cloud_config_dirs", lambda: list(self.clouds))):
             patcher = mock.patch.object(w, name, side_effect=fn)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -73,8 +70,53 @@ class CutoffConfigTests(TempConfig):
         self.assertEqual(w.cutoff_menu_label(cfg, "Codex"), "Stop Codex at: off")
 
     def test_menu_providers(self):
-        self.assertEqual(w.cutoff_menu_providers([]), ["Claude", "Codex"])
-        self.assertEqual(w.cutoff_menu_providers([usage("Codex"), usage("Bedrock")]), ["Codex", "Bedrock"])
+        self.assertEqual(w.cutoff_menu_providers([]), [])
+        codex = usage("Codex")
+        codex.account = "acct-1"
+        self.assertEqual(w.cutoff_menu_providers([codex, usage("Bedrock")]), [("Codex", "acct-1"), ("Bedrock", "")])
+
+
+class AccountCutoffTests(TempConfig):
+    def test_cutoff_for_an_account(self):
+        cfg = {"cutoff": {"Claude": {"me": 95, "work": 80}, "Codex": 90}}
+        self.assertEqual(w.cutoff_for(cfg, "Claude", "me"), 95.0)
+        self.assertEqual(w.cutoff_for(cfg, "Claude", "work"), 80.0)
+        self.assertIsNone(w.cutoff_for(cfg, "Claude", "someone-else"))
+        self.assertIsNone(w.cutoff_for(cfg, "Claude"))  # account unknown: only an any-account number applies
+        self.assertEqual(w.cutoff_for(cfg, "Codex", "any"), 90.0)
+        self.assertEqual(w.cutoff_for(cfg, "Codex"), 90.0)
+        self.assertIsNone(w.cutoff_for({"cutoff": {"Claude": {"me": 150}}}, "Claude", "me"))
+
+    def test_set_cutoff_per_account(self):
+        w.set_cutoff("Claude", 95, "me")
+        w.set_cutoff("Claude", 80, "work")
+        self.assertEqual(w.load_config()["cutoff"], {"Claude": {"me": 95, "work": 80}})
+        w.set_cutoff("Claude", None, "me")
+        self.assertEqual(w.load_config()["cutoff"], {"Claude": {"work": 80}})
+        w.set_cutoff("Claude", None, "work")
+        self.assertNotIn("cutoff", w.load_config())
+
+    def test_account_cutoff_replaces_an_any_account_number(self):
+        w.set_cutoff("Codex", 90)
+        w.set_cutoff("Codex", 95, "me")
+        self.assertEqual(w.load_config()["cutoff"], {"Codex": {"me": 95}})
+
+    def test_menu_label_for_an_account(self):
+        cfg = {"cutoff": {"Claude": {"me": 95}}}
+        self.assertEqual(w.cutoff_menu_label(cfg, "Claude", "me"), "Stop Claude at: 95%")
+        self.assertEqual(w.cutoff_menu_label(cfg, "Claude", "other"), "Stop Claude at: off")
+
+    def test_claude_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(w.os.environ, {"CLAUDE_CONFIG_DIR": tmp}):
+                self.assertEqual(w.claude_account(), "")
+                w._write_json(Path(tmp) / ".claude.json", {"oauthAccount": {
+                    "accountUuid": "acc-1", "organizationUuid": "org-1", "emailAddress": "me@example.com"}})
+                self.assertEqual(w.claude_account(), "acc-1/org-1")
+                w._write_json(Path(tmp) / ".claude.json", {"oauthAccount": {"accountUuid": "acc-1"}})
+                self.assertEqual(w.claude_account(), "acc-1")
+                w._write_json(Path(tmp) / ".claude.json", {"oauthAccount": "garbage"})
+                self.assertEqual(w.claude_account(), "")
 
 
 class CliNameTests(unittest.TestCase):
@@ -166,6 +208,14 @@ class CutoffClisTests(unittest.TestCase):
                     mock.patch.object(w, "codex_bedrock_urls", return_value=urls):
                 self.assertEqual(w.cutoff_clis("Bedrock"), expected)
 
+    def test_vertex_and_azure_stop_the_clis_that_use_them(self):
+        with mock.patch.object(w, "claude_uses_vertex", return_value=True), \
+                mock.patch.object(w, "codex_vertex_urls", return_value=[]), \
+                mock.patch.object(w, "claude_uses_foundry", return_value=False), \
+                mock.patch.object(w, "codex_azure_urls", return_value=["https://x.openai.azure.com/openai"]):
+            self.assertEqual(w.cutoff_clis("Vertex"), {"claude"})
+            self.assertEqual(w.cutoff_clis("Azure"), {"codex"})
+
 
 class EnforceCutoffsTests(TempConfig):
     RUNNING = [(11, "claude"), (12, "claude"), (21, "codex")]
@@ -197,8 +247,24 @@ class EnforceCutoffsTests(TempConfig):
         with mock.patch.object(w.time, "time", return_value=1000.0):
             self.enforce([usage("Claude", 85), usage("Codex", 85)], {"Claude": 90, "Codex": 80})
         self.assertEqual(w.load_config(), {"x": 5, "cutoff": {"Claude": 90},
-                                           "cutoff_reached": {"Codex": {"at": 1000.0, "cutoff": 80.0}},
+                                           "cutoff_reached": {"Codex": {"at": 1000.0, "cutoff": 80.0, "account": ""}},
                                            "cutoff_handled": {"Codex": 1000.0}})
+
+    def test_only_the_accounts_cutoff_applies_and_is_cleared(self):
+        mine = usage("Claude", 96)
+        mine.account = "me"
+        _, stopped = self.enforce([mine], {"Claude": {"me": 95, "work": 50}})
+        self.assertEqual(stopped, [11, 12])
+        self.assertEqual(w.load_config()["cutoff"], {"Claude": {"work": 50}})
+        self.assertEqual(w.load_config()["cutoff_reached"]["Claude"]["account"], "me")
+
+    def test_another_accounts_cutoff_does_not_apply(self):
+        other = usage("Claude", 99)
+        other.account = "someone-else"
+        find, stopped = self.enforce([other], {"Claude": {"me": 50}})
+        find.assert_not_called()
+        self.assertEqual(stopped, [])
+        self.assertEqual(w.load_config()["cutoff"], {"Claude": {"me": 50}})
 
     def test_fires_only_once(self):
         _, stopped = self.enforce([usage("Codex", 96)], {"Codex": 95})
@@ -251,107 +317,15 @@ class EnforceCutoffsTests(TempConfig):
 
 
 class CloudConfig(TempConfig):
-    """Also gives every computer the same temporary cloud folder."""
+    """Also gives every computer the same temporary cloud folder; the sync itself is tested in test_sync.py."""
 
     def setUp(self):
         super().setUp()
-        self.cloud = self.root / "cloud" / w.APP_NAME
-        self.cloud.parent.mkdir()
-
-    def read(self, path):
-        return json.loads(path.read_text(encoding="utf-8"))
+        self.clouds = [self.root / "cloud" / w.APP_NAME]
+        self.clouds[0].parent.mkdir()
 
     def use_computer(self, name):
         self.local = self.root / name
-
-
-class SyncedConfigTests(CloudConfig):
-    def test_local_only_without_cloud_folder(self):
-        self.cloud = None
-        w.save_config({"cutoff": {"Claude": 90}, "x": 1})
-        self.assertEqual(self.read(self.local / "config.json"), {"cutoff": {"Claude": 90}, "x": 1})
-        self.assertEqual(w.load_config(), {"cutoff": {"Claude": 90}, "x": 1})
-
-    def test_saves_shared_settings_to_the_cloud(self):
-        w.save_config({"cutoff": {"Claude": 90}, "x": 1, "y": 2, "taskbar_text": False, "topmost": False})
-        self.assertEqual(self.read(self.cloud / "config.json"), {"cutoff": {"Claude": 90}, "topmost": False})
-        self.assertEqual(self.read(self.local / "config.json")["x"], 1)  # full local copy as a fallback
-        self.assertFalse((self.cloud / "config.json.tmp").exists())
-
-    def test_first_run_seeds_the_cloud_from_local_settings(self):
-        w._write_json(self.local / "config.json", {"cutoff": {"Codex": 80}, "x": 3})
-        self.assertEqual(w.load_config(), {"cutoff": {"Codex": 80}, "x": 3})
-        self.assertEqual(self.read(self.cloud / "config.json"), {"cutoff": {"Codex": 80}})
-
-    def test_nothing_written_to_the_cloud_until_there_is_a_setting(self):
-        w.update_config(x=1)
-        self.assertEqual(w.load_config(), {"x": 1})
-        self.assertFalse(self.cloud.exists())
-        w.set_cutoff("Claude", 80)
-        self.assertEqual(self.read(self.cloud / "config.json"), {"cutoff": {"Claude": 80}})
-
-    def test_cloud_settings_win_over_stale_local_ones(self):
-        w._write_json(self.local / "config.json", {"cutoff": {"Codex": 80}, "bedrock": False, "x": 3})
-        w._write_json(self.cloud / "config.json", {"cutoff": {"Claude": 95}, "x": 999})
-        # Settings removed on another computer stay removed; position stays this computer's.
-        self.assertEqual(w.load_config(), {"cutoff": {"Claude": 95}, "x": 3})
-
-    def test_settings_follow_to_another_computer(self):
-        self.use_computer("mac")
-        w.update_config(x=10)
-        w.set_cutoff("Claude", 95)
-        self.use_computer("pc")
-        self.assertEqual(w.cutoff_for(w.load_config(), "Claude"), 95.0)
-        w.set_cutoff("Codex", 90)
-        w.update_config(taskbar_text=False)
-        self.use_computer("mac")
-        self.assertEqual(w.load_config(), {"cutoff": {"Claude": 95, "Codex": 90}, "x": 10})
-
-    def test_unreadable_cloud_file_is_not_overwritten(self):
-        w._write_json(self.local / "config.json", {"cutoff": {"Codex": 80}})
-        (self.cloud / "config.json").parent.mkdir(parents=True)
-        (self.cloud / "config.json").write_text("{half-synced", encoding="utf-8")
-        self.assertEqual(w.load_config(), {"cutoff": {"Codex": 80}})
-        self.assertEqual((self.cloud / "config.json").read_text(encoding="utf-8"), "{half-synced")
-
-    def test_icloud_placeholder_is_left_alone(self):
-        self.cloud.mkdir()
-        (self.cloud / ".config.json.icloud").write_bytes(b"")
-        w.save_config({"cutoff": {"Claude": 50}})
-        self.assertFalse((self.cloud / "config.json").exists())
-        self.assertEqual(w.load_config(), {"cutoff": {"Claude": 50}})
-
-    def test_sync_can_be_turned_off(self):
-        w._write_json(self.local / "config.json", {"sync": False, "cutoff": {"Codex": 80}})
-        self.assertEqual(w.load_config(), {"sync": False, "cutoff": {"Codex": 80}})
-        w.set_cutoff("Claude", 90)
-        self.assertFalse((self.cloud / "config.json").exists())
-
-    def test_window_moves_do_not_rewrite_the_cloud_file(self):
-        w.set_cutoff("Claude", 90)
-        path = self.cloud / "config.json"
-        os.utime(path, (1, 1))
-        w.update_config(x=5, y=6)
-        self.assertEqual(path.stat().st_mtime, 1)
-
-    def test_cloud_folder_lookup(self):
-        home = self.root / "home"
-        icloud = home / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
-        onedrive = self.root / "OneDrive - Contoso"
-        real = CLOUD_CONFIG_DIR
-        with mock.patch.object(w.sys, "platform", "darwin"), mock.patch.object(w.Path, "home", return_value=home):
-            self.assertIsNone(real())
-            icloud.mkdir(parents=True)
-            self.assertEqual(real(), icloud / w.APP_NAME)
-        with mock.patch.object(w.sys, "platform", "win32"):
-            with mock.patch.dict(w.os.environ, {"OneDrive": "", "OneDriveConsumer": "", "OneDriveCommercial": ""}):
-                self.assertIsNone(real())
-            with mock.patch.dict(w.os.environ, {"OneDrive": "", "OneDriveCommercial": str(onedrive)}):
-                self.assertIsNone(real())  # not there
-                onedrive.mkdir()
-                self.assertEqual(real(), onedrive / w.APP_NAME)
-        with mock.patch.object(w.sys, "platform", "linux"):
-            self.assertIsNone(real())
 
 
 class SyncedCutoffTests(CloudConfig):
@@ -391,6 +365,34 @@ class SyncedCutoffTests(CloudConfig):
         stopped = self.enforce_on("pc", [usage("Claude", 91)], [(2, "claude")], 1000 + w.CUTOFF_SYNC_WINDOW + 1)
         self.assertEqual(stopped, [])
 
+    def test_a_computer_on_another_account_is_left_alone(self):
+        def claude(percent, account):
+            u = usage("Claude", percent)
+            u.account = account
+            return u
+
+        self.use_computer("mac")
+        w.set_cutoff("Claude", 90, "personal")
+        self.assertEqual(self.enforce_on("mac", [claude(91, "personal")], [(1, "claude")], 1000), [1])
+        # The PC is signed in to a work account: neither the cutoff nor its being reached applies there.
+        self.assertEqual(self.enforce_on("pc", [claude(99, "work")], [(2, "claude")], 1100), [])
+        # A laptop on the personal account stops its CLI too.
+        self.assertEqual(self.enforce_on("laptop", [claude(91, "personal")], [(3, "claude")], 1200), [3])
+
+    def test_work_and_personal_cutoffs_side_by_side(self):
+        def claude(percent, account):
+            u = usage("Claude", percent)
+            u.account = account
+            return u
+
+        self.use_computer("mac")
+        w.set_cutoff("Claude", 90, "personal")
+        self.use_computer("pc")
+        w.set_cutoff("Claude", 80, "work")
+        self.assertEqual(self.enforce_on("pc", [claude(85, "work")], [(2, "claude")], 1000), [2])
+        self.assertEqual(self.enforce_on("mac", [claude(85, "personal")], [(1, "claude")], 1100), [])
+        self.assertEqual(w.load_config()["cutoff"], {"Claude": {"personal": 90}})
+
     def test_new_cutoff_after_one_was_reached(self):
         self.use_computer("mac")
         w.set_cutoff("Claude", 90)
@@ -403,6 +405,11 @@ class SyncedCutoffTests(CloudConfig):
 
 class RealProcessTests(unittest.TestCase):
     """Starts a harmless stand-in named like the CLI, then finds and stops it with the real OS calls."""
+
+    def setUp(self):
+        patcher = mock.patch.object(w, "subprocess", subprocess)  # conftest swaps in a fake one
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def start_fake_cli(self, name):
         if sys.platform == "win32":

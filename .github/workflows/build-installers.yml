@@ -51,6 +51,7 @@ jobs:
 
   macos:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: macos-latest       # Apple Silicon
@@ -131,6 +132,16 @@ jobs:
           key="$RUNNER_TEMP/AuthKey.p8"
           echo "$AC_API_KEY_P8_BASE64" | base64 --decode > "$key"
           auth=(--key "$key" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER_ID")
+          # stapler and spctl look the ticket up in Apple's CloudKit, which often drops the
+          # connection from the runners (Error 68), so retry them before giving up.
+          retry() {
+            for attempt in 1 2 3 4 5; do
+              "$@" && return 0
+              [ "$attempt" -lt 5 ] || return 1
+              echo "'$*' failed (attempt $attempt), retrying in $((attempt * 30))s"
+              sleep $((attempt * 30))
+            done
+          }
           for pkg in dist/*.pkg; do
             # `submit --wait` exits 0 even when the status is Invalid, so check it and print the log.
             xcrun notarytool submit "$pkg" "${auth[@]}" --wait --timeout 45m --output-format json > "$RUNNER_TEMP/notary.json" || true
@@ -140,9 +151,9 @@ jobs:
               [ -z "$id" ] || xcrun notarytool log "$id" "${auth[@]}" || true
               exit 1
             fi
-            xcrun stapler staple "$pkg"
-            xcrun stapler validate "$pkg"
-            spctl -a -vvv -t install "$pkg"
+            retry xcrun stapler staple "$pkg"
+            retry xcrun stapler validate "$pkg"
+            retry spctl -a -vvv -t install "$pkg"
           done
           rm -f "$key"
       - uses: actions/upload-artifact@v7

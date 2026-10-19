@@ -3,7 +3,9 @@
 Shows your **Claude** and **Codex** plan usage limits (session / weekly windows, model-scoped
 limits, and time until each resets) where your system status icons live:
 
-<img src="images/ubuntu.png" alt="The widget in the Ubuntu top bar with its menu open" width="360">
+| Linux (Ubuntu) | macOS | Windows |
+|---|---|---|
+| <img src="images/ubuntu.png" alt="The widget in the Ubuntu top bar with its menu open" width="260"> | <img src="images/macos.png" alt="The widget in the macOS menu bar with its menu open" width="260"> | <img src="images/windows.png" alt="The widget on the Windows taskbar with its menu open" width="260"> |
 
 | OS | Where it appears | What it shows |
 |---|---|---|
@@ -26,6 +28,8 @@ token is sent only to the provider that issued it.
 | Claude | macOS Keychain `Claude Code-credentials`, else `~/.claude/.credentials.json` (`$CLAUDE_CONFIG_DIR`) | `api.anthropic.com/api/oauth/usage` |
 | Codex  | `~/.codex/auth.json` (`$CODEX_HOME`) | `chatgpt.com/backend-api/wham/usage` |
 | Bedrock | Your AWS credentials (profile, SSO, env vars), via boto3 | AWS Budgets, Cost Explorer, CloudWatch |
+| Vertex | Google Application Default Credentials (`gcloud auth application-default login`) | Cloud Monitoring, BigQuery billing export |
+| Azure | The Azure CLI login (`az login`), or azure-identity if installed | Azure Monitor, Cost Management, Consumption budgets |
 
 > These are the same internal endpoints the official CLIs use for their `/usage` and `/status`
 > screens. They are undocumented and may change; if a provider shows an error after an update,
@@ -109,36 +113,42 @@ usage_widget.py --interval 300   # refresh every 5 minutes (default 180 s, min 6
 ### Cutoff quotas
 
 Each provider can have its own cutoff: a percentage of its fullest limit at which the widget stops the
-CLIs that use that provider's quota. Choose one from *Stop Claude at* / *Stop Codex at* / *Stop Bedrock at*
-in the menu (Off, 80%, 90%, 95% or 99%), or set any value from 1 to 100 in `config.json`:
+CLIs that use that provider's quota. Choose one from *Stop Claude at*, *Stop Codex at*, etc. in the menu
+(Off, 80%, 90%, 95% or 99%). A cutoff chosen in the menu belongs to the account that is signed in: the
+Claude account and organization in `~/.claude.json`, the ChatGPT account in `~/.codex/auth.json`, the AWS
+account, the Google Cloud projects or the Azure subscription and resources. So with [synced settings](#settings-sync),
+a computer signed in to a different account is not affected. You can also set any value from 1 to 100
+in `config.json`, where a plain number applies to any account:
 
 ```json
-"cutoff": {"Claude": 95, "Codex": 90, "Bedrock": 100}
+"cutoff": {"Claude": {"<account uuid>/<organization uuid>": 95}, "Codex": 90}
 ```
 
 On the first refresh that finds a provider at or over its cutoff, the widget stops every running process
-of that provider's CLI: `claude` for Claude, `codex` for Codex, and whichever of the two runs on Bedrock
-for Bedrock (Bedrock needs a `budget`, since that is its only limit with a percentage). The menu then
+of that provider's CLI: `claude` for Claude, `codex` for Codex, and whichever of the two runs on it for
+Bedrock, Vertex AI and Azure (these need a `budget`, since that is their only limit with a percentage). The menu then
 shows `⛔ Cutoff 95% reached — stopped 2 claude processes; cutoff cleared`. The cutoff turns itself off
 once it is reached, so you can start the CLI again; set a new cutoff if you want another one. The Claude and
 Codex desktop apps are never stopped. Usage is only checked on each refresh (every 3 minutes by default),
 so a busy session can go a little past the cutoff before it is stopped.
 
-With [synced settings](#settings-sync), a cutoff set on one computer applies to all of them, and every
-computer stops its own CLIs when it is reached (if it is running the widget and sees that within an hour).
+With [synced settings](#settings-sync), a cutoff set on one computer applies to every computer signed in
+to the same account, and each of them stops its own CLIs when it is reached (if it is running the widget
+and sees that within an hour).
 
 ### Settings sync
 
 On macOS and Windows the settings, including each provider's cutoff, sync between your computers through
-iCloud Drive (`iCloud Drive/llm-usage-widget/config.json`) or OneDrive (`OneDrive/llm-usage-widget/config.json`).
-This needs nothing but iCloud Drive or the OneDrive app being signed in; otherwise the settings stay on this
-computer, and the first time the widget finds the cloud folder it copies them there. The window position and
-*Show usage on the taskbar* are per computer and are not synced. macOS may ask once whether the widget may
-access iCloud Drive.
+iCloud Drive and OneDrive, in an `llm-usage-widget` folder. When a computer has both, the settings go to
+both, so it also links a Mac that only has iCloud with a PC that only has OneDrive; the most recently saved
+copy wins. This needs nothing but iCloud Drive (or iCloud for Windows) or OneDrive being signed in;
+otherwise the settings stay on this computer, and the first time the widget finds a cloud folder it copies
+them there. The window position and *Show usage on the taskbar* are per computer and are not synced. macOS
+may ask once whether the widget may access iCloud Drive or OneDrive.
 
-A full copy is also kept in the local `config.json`, which is used whenever the cloud folder is unavailable.
-To edit settings by hand while syncing, edit the copy in the cloud folder. To stop syncing on one computer,
-add `"sync": false` to its local `config.json`. Uninstalling leaves the cloud copy in place.
+A full copy is also kept in the local `config.json`, which is used whenever no cloud folder is available.
+To edit settings by hand while syncing, edit a copy in a cloud folder. To stop syncing on one computer,
+add `"sync": false` to its local `config.json`. Uninstalling leaves the cloud copies in place.
 
 ### Expired logins
 
@@ -247,7 +257,7 @@ Code's `env` block, or the region in Codex's `base_url`. In that case the Claude
 is hidden if that CLI has no subscription login. To override any of this, add a `bedrock` entry to
 `config.json` in the widget's config folder (`~/.config/llm-usage-widget/` on Linux,
 `~/Library/Application Support/llm-usage-widget/` on macOS, `%APPDATA%\llm-usage-widget\` on Windows;
-the [cloud folder](#settings-sync) when settings sync):
+a [cloud folder](#settings-sync) when settings sync):
 
 ```json
 {
@@ -273,12 +283,100 @@ have expired (for example an SSO session), the section says to run `aws sso logi
 **Cost:** Cost Explorer charges $0.01 per request and its data only updates a few times a day, so spend
 (and the budget) is fetched at most every `cost_interval` seconds (6 h by default, about $1.20 a month).
 Token counts are fetched every `metrics_interval` seconds (15 min). Both are cached in
-`bedrock-cache.json` next to `config.json`, so restarts don't refetch them, and *Refresh now* doesn't
+`cloud-cache.json` next to `config.json`, so restarts don't refetch them, and *Refresh now* doesn't
 bypass the cache either. Billing data can lag by a day or more, so don't treat this as a spending alarm.
+
+## Google Vertex AI
+
+If Claude Code or Codex runs on Vertex AI, the widget adds a **Vertex** section instead:
+
+- **Tokens today:** input and output tokens since local midnight from Cloud Monitoring
+  (`aiplatform.googleapis.com/publisher/online_serving/token_count`). This counts every publisher model in the
+  project (Claude, Gemini and others), not only the ones the CLIs use.
+- **This month:** month-to-date spend, after credits, for Vertex AI and partner models such as Claude. Google
+  has no API that reports current spend, so this needs a
+  [Cloud Billing export to BigQuery](https://cloud.google.com/billing/docs/how-to/export-data-bigquery) and
+  its table name in `billing_table`. If you also set `budget` (an amount per month, in the billing currency),
+  the row becomes a percentage bar.
+
+The section turns on when Claude Code's settings set `CLAUDE_CODE_USE_VERTEX`, or a `base_url` in
+`~/.codex/config.toml` points at `aiplatform.googleapis.com`. The project comes from
+`ANTHROPIC_VERTEX_PROJECT_ID` or the `projects/<id>/` part of that URL. Overrides go in `config.json`:
+
+```json
+{
+  "vertex": {
+    "projects": ["my-project"],
+    "billing_table": "my-project.billing.gcp_billing_export_v1_XXXXXX_XXXXXX_XXXXXX",
+    "budget": 500,
+    "cost_interval": 21600,
+    "metrics_interval": 900
+  }
+}
+```
+
+Use `"vertex": true` or `false` to force the section on or off. Credentials are the Application Default
+Credentials from `gcloud auth application-default login` (or `$GOOGLE_APPLICATION_CREDENTIALS`), refreshed
+directly with Google. For service-account or other ADC types the widget uses the `google-auth` package if it
+is installed, else `gcloud auth print-access-token`. The identity needs `monitoring.timeSeries.list`
+(*Monitoring Viewer*) and, for spend, *BigQuery Job User* plus read access to the export dataset. The billing
+query is run in the first project and scans the current month of the export table, which usually costs
+nothing or close to it.
+
+## Azure OpenAI and Microsoft Foundry
+
+If Codex (or Claude Code, through Microsoft Foundry) runs on Azure, the widget adds an **Azure** section:
+
+- **Budget:** spend against an [Azure budget](https://portal.azure.com/#view/Microsoft_Azure_CostManagement/Menu/~/budgets)
+  as a percentage bar. This only appears if you name a budget.
+- **This month:** month-to-date actual cost of the Azure OpenAI / Foundry resources, from Cost Management.
+- **Tokens today:** prompt and completion tokens since local midnight, from Azure Monitor.
+
+The section turns on when a `base_url` in `~/.codex/config.toml` points at `<resource>.openai.azure.com`,
+`<resource>.cognitiveservices.azure.com` or `<resource>.services.ai.azure.com`, or Claude Code's settings set
+`CLAUDE_CODE_USE_FOUNDRY` (the resource comes from `ANTHROPIC_FOUNDRY_RESOURCE` or
+`ANTHROPIC_FOUNDRY_BASE_URL`). The widget finds those resources in your subscription. Overrides go in
+`config.json`:
+
+```json
+{
+  "azure": {
+    "subscription": "00000000-0000-0000-0000-000000000000",
+    "resources": ["my-openai", "/subscriptions/.../providers/Microsoft.CognitiveServices/accounts/other"],
+    "budget": "ai-monthly",
+    "cost_management": true,
+    "cost_interval": 21600,
+    "metrics_interval": 900
+  }
+}
+```
+
+`resources` takes resource names or full resource IDs. With `"azure": true` and no resources, every Azure
+OpenAI and AI Services resource in the subscription is included. `budget` is a budget name at subscription
+scope, or a budget's full resource ID for one on a resource group. Without `subscription`, the Azure CLI's
+current one is used (or all of them, with azure-identity). Credentials come from `az login`, or from the
+`azure-identity` package's `DefaultAzureCredential` if the CLI isn't available. The identity needs *Reader*
+on the resources (with *Monitoring Reader*) and *Cost Management Reader* on the subscription. Cost data is
+cached like Bedrock's: Cost Management is free but throttled, and only updates a few times a day.
 
 ## Adding a provider
 
-Write a `fetch_<name>()` that returns a `ProviderUsage` and add it to `PROVIDERS`.
+Write a `fetch_<name>()` that returns a `ProviderUsage` and add it to `PROVIDERS`, then add tests for
+it under `tests/` (see `tests/test_codex.py` for the pattern: canned responses, no network).
+
+## Running the tests
+
+```sh
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest                  # Linux without a display: xvfb-run -a python3 -m pytest
+python3 -m pytest --cov            # with a coverage report
+```
+
+The tests never touch the network or your real logins: each one runs against an empty temporary home
+directory, and the provider APIs, AWS, Google Cloud, Azure, GTK/AppIndicator, pystray and Win32 are
+faked. The Tk tests are skipped when there is no display. GitHub Actions runs the suite on every pull request and push to `main`
+(`.github/workflows/tests.yml`) on Linux, macOS and Windows with Python 3.9 to 3.14, plus Ruff and
+ShellCheck, and installs the `.deb` on Ubuntu to run the tests on the system Python.
 
 ## License
 

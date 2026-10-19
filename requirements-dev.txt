@@ -1,0 +1,5 @@
+# Running the tests: python3 -m pip install -r requirements-dev.txt && python3 -m pytest
+pytest>=7.4
+pytest-cov>=4.1
+boto3>=1.28
+Pillow>=9.1

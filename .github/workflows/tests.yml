@@ -1,25 +1,88 @@
 name: Tests
 
-# Unit tests on every OS the widget runs on. Also called by build-installers.yml, so a
-# release is only published when they pass.
+# Also called by build-installers.yml, so a release is only published when the tests pass.
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
   workflow_call:
 
+permissions:
+  contents: read
+
+# A new push to the same PR or branch cancels the run still going for the previous one.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+# All actions run on the Node 24 runtime.
+
 jobs:
-  unittest:
+  lint:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install ruff
+      - run: ruff check .
+      - name: ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck install.sh packaging/linux/*.sh packaging/macos/*.sh
+
+  test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-26.04, macos-latest, windows-latest]
-        python: ['3.9', '3.12']
-    runs-on: ${{ matrix.os }}
+        runner: [ubuntu-26.04, macos-latest, macos-15-intel, windows-latest]
+        python: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+        # setup-python has no 3.9 build for Ubuntu 26.04; test it on 24.04 instead.
+        exclude:
+          - runner: ubuntu-26.04
+            python: '3.9'
+        include:
+          - runner: ubuntu-24.04
+            python: '3.9'
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m unittest discover -s tests -v
+      - run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      # Linux runners have no display, so give the Tk tests a virtual one.
+      - name: Run the tests (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb
+          xvfb-run -a python -m pytest --cov
+      - name: Run the tests
+        if: runner.os != 'Linux'
+        run: python -m pytest --cov
+
+  # Build and install the .deb, then run the suite on each Ubuntu LTS's own Python and packages.
+  deb:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-26.04]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: packaging/linux/build-deb.sh
+      - name: Install the package and the test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ./dist/*.deb \
+            python3-tk python3-boto3 python3-pil python3-pytest xvfb
+      - name: Check the installed copy
+        run: |
+          cmp usage_widget.py /usr/lib/llm-usage-widget/usage_widget.py
+          llm-usage-widget --version
+          llm-usage-widget --once
+      - run: xvfb-run -a /usr/bin/python3 -m pytest

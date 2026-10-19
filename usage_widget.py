@@ -7,8 +7,9 @@ logged in, the widget works. Credentials are only ever read, never written,
 and are sent only to the provider that issued them.
 
 When Claude Code or Codex run on Amazon Bedrock (including the bedrock-mantle
-endpoint) there are no plan limits; instead it shows Bedrock spend and token
-counts using your AWS credentials (needs boto3).
+endpoint), Google Vertex AI or Azure OpenAI / Microsoft Foundry there are no
+plan limits; instead it shows that cloud's spend and token counts using your
+AWS (needs boto3), Google Cloud or Azure credentials.
 
 Appears where the system status icons live: the Linux top bar (AppIndicator,
 via the system's PyGObject), the macOS menu bar and the Windows notification
@@ -26,6 +27,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import ssl
 import subprocess
@@ -33,13 +35,14 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-__version__ = "0.0.2"
+__version__ = "0.0.5"
 
 APP_NAME = "llm-usage-widget"
 USER_AGENT = f"llm-usage-widget/{__version__}"
@@ -80,6 +83,7 @@ class ProviderUsage:
     error: str = ""
     fetched_at: float = 0.0
     summary: str = ""  # top-bar text when no limit has a percentage, e.g. "$12.34"
+    account: str = ""  # whose numbers these are, so a synced cutoff only applies to that account
 
 
 class AuthError(Exception):
@@ -88,6 +92,12 @@ class AuthError(Exception):
 
 class NotUsed(Exception):
     """The CLI is set up for another backend (e.g. Bedrock); leave this provider out."""
+
+
+class HTTPStatusError(RuntimeError):
+    def __init__(self, code: int, detail: str = ""):
+        super().__init__(f"HTTP {code}" + (f": {detail}" if detail else ""))
+        self.code = code
 
 
 # --------------------------------------------------------------------------
@@ -108,20 +118,80 @@ def _ssl_context() -> ssl.SSLContext:
 _SSL_CONTEXT: ssl.SSLContext | None = None
 
 
-def http_json(url: str, headers: dict[str, str], timeout: float = 20) -> dict:
+def http_json(url: str, headers: dict[str, str], timeout: float = 20, body: dict | None = None,
+              form: dict | None = None, auth_errors: bool = True) -> dict:
+    """GET (or POST `body` as JSON, `form` urlencoded) and parse the JSON reply.
+
+    With auth_errors, 401/403 raise AuthError; otherwise every error status raises
+    HTTPStatusError carrying the API's own message, so callers can tell them apart.
+    """
     global _SSL_CONTEXT
     if _SSL_CONTEXT is None:
         _SSL_CONTEXT = _ssl_context()
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json", **headers})
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json", **headers}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    elif form is not None:
+        data = urllib.parse.urlencode(form).encode()
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(url, data=data, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
+        if auth_errors and e.code in (401, 403):
             raise AuthError(f"HTTP {e.code}: login rejected") from e
-        raise RuntimeError(f"HTTP {e.code}") from e
+        if auth_errors:
+            raise RuntimeError(f"HTTP {e.code}") from e
+        raise HTTPStatusError(e.code, _error_detail(e)) from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"network: {e.reason}") from e
+
+
+def _error_detail(e: urllib.error.HTTPError) -> str:
+    """The message in a Google/Azure-style error body ({"error": {"message": ...}}), shortened."""
+    try:
+        err = json.loads(e.read().decode("utf-8", "replace")).get("error")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    if isinstance(err, dict):
+        msg = str(err.get("message") or err.get("code") or "")
+    else:
+        msg = str(err or "")
+    msg = " ".join(msg.split())
+    return msg if len(msg) <= 90 else msg[:89] + "…"
+
+
+def find_cli(name: str) -> str | None:
+    """A command-line tool on PATH, or in the usual install folders a login-started app's PATH lacks."""
+    found = shutil.which(name)
+    if found:
+        return found
+    dirs = [Path.home() / "google-cloud-sdk" / "bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin"),
+            Path("/snap/bin"), Path("/usr/lib/google-cloud-sdk/bin")]
+    if sys.platform == "win32":
+        for var in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+            if os.environ.get(var):
+                root = Path(os.environ[var])
+                dirs += [root / "Microsoft SDKs" / "Azure" / "CLI2" / "wbin",
+                         root / "Google" / "Cloud SDK" / "google-cloud-sdk" / "bin"]
+    return shutil.which(name, path=os.pathsep.join(str(d) for d in dirs))
+
+
+def run_cli(args: list[str], timeout: float = 30) -> str | None:
+    """stdout of a CLI command, or None if it is missing or fails. No console window on Windows."""
+    exe = find_cli(args[0])
+    if not exe:
+        return None
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        out = subprocess.run([exe, *args[1:]], capture_output=True, text=True, timeout=timeout,
+                             creationflags=flags)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout if out.returncode == 0 else None
 
 
 def parse_time(value) -> datetime | None:
@@ -131,7 +201,7 @@ def parse_time(value) -> datetime | None:
         if isinstance(value, (int, float)):
             return datetime.fromtimestamp(float(value), tz=timezone.utc)
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (ValueError, OSError):
+    except (ValueError, OSError, OverflowError):
         return None
 
 
@@ -174,23 +244,41 @@ def config_dir() -> Path:
     return base / APP_NAME
 
 
-# On macOS and Windows the settings sync between computers through iCloud Drive or
-# OneDrive: config.json in the cloud folder holds everything but these keys, which
-# describe this computer. The local config.json keeps a full copy, used whenever the
-# cloud folder is unavailable. "sync": false in the local file turns syncing off.
+# On macOS and Windows the settings sync between computers through iCloud Drive and
+# OneDrive, every one of them that is set up: config.json in each cloud folder holds
+# everything but these keys, which describe this computer, plus "saved_at", so the
+# newest copy wins and is copied to the others. A computer with both iCloud and
+# OneDrive thereby links a Mac on iCloud only with a PC on OneDrive only. The local
+# config.json keeps a full copy, used whenever no cloud folder is available.
+# "sync": false in the local file turns syncing off.
 LOCAL_ONLY_KEYS = ("x", "y", "taskbar_text", "sync", "cutoff_handled")
 
 
-def cloud_config_dir() -> Path | None:
-    """The iCloud Drive (macOS) or OneDrive (Windows) folder for synced settings; None if there is none."""
+def cloud_config_dirs() -> list[Path]:
+    """The iCloud Drive and OneDrive folders for synced settings, as many as are set up."""
+    home = Path.home()
+    roots = []
     if sys.platform == "darwin":
-        root = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+        roots.append(home / "Library" / "Mobile Documents" / "com~apple~CloudDocs")
+        try:  # OneDrive on macOS 12+, one folder per account: OneDrive-Personal, OneDrive-<Company>
+            roots += sorted(p for p in (home / "Library" / "CloudStorage").iterdir() if p.name.startswith("OneDrive"))
+        except OSError:
+            pass
+        roots.append(home / "OneDrive")  # older OneDrive versions
     elif sys.platform == "win32":
-        root = next((Path(os.environ[v]) for v in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial")
-                     if os.environ.get(v)), None)
-    else:
-        return None
-    return root / APP_NAME if root is not None and root.is_dir() else None
+        roots += [Path(os.environ[v]) for v in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial")
+                  if os.environ.get(v)]
+        roots.append(home / "iCloudDrive")  # iCloud for Windows
+    found, seen = [], set()
+    for root in roots:
+        try:
+            if not root.is_dir() or root.resolve() in seen:  # the OneDrive variables often name one folder
+                continue
+            seen.add(root.resolve())
+        except OSError:
+            continue
+        found.append(root / APP_NAME)
+    return found
 
 
 def _read_json(path: Path) -> dict | None:
@@ -209,36 +297,55 @@ def _write_json(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
-def _synced_path(local: dict) -> Path | None:
+def _synced_paths(local: dict) -> list[Path]:
     if local.get("sync", True) is False:
-        return None
-    folder = cloud_config_dir()
-    if folder is None or (folder / ".config.json.icloud").exists():
-        return None  # no cloud folder, or iCloud hasn't downloaded the file: don't overwrite it
-    return folder / "config.json"
+        return []
+    # Skip a folder where iCloud hasn't downloaded the file yet, rather than overwrite it.
+    return [d / "config.json" for d in cloud_config_dirs() if not (d / ".config.json.icloud").exists()]
 
 
 def _shared(cfg: dict) -> dict:
-    return {k: v for k, v in cfg.items() if k not in LOCAL_ONLY_KEYS}
+    return {k: v for k, v in cfg.items() if k not in LOCAL_ONLY_KEYS and k != "saved_at"}
+
+
+def _write_copies(paths: list[Path], content: dict) -> None:
+    """Write content to every cloud copy that differs, except ones that exist but can't be read (mid-sync)."""
+    for path in paths:
+        current = _read_json(path)
+        if current == content or (current is None and path.exists()):
+            continue
+        try:
+            _write_json(path, content)
+        except OSError:
+            pass
+
+
+def _newest_copy(paths: list[Path]) -> dict | None:
+    def age(item):
+        path, copy = item
+        saved = copy.get("saved_at")
+        try:
+            mtime = path.stat().st_mtime  # breaks ties, e.g. a copy edited by hand
+        except OSError:
+            mtime = 0.0
+        return (saved if isinstance(saved, (int, float)) else 0.0, mtime)
+
+    copies = [(p, c) for p, c in ((p, _read_json(p)) for p in paths) if c is not None]
+    return max(copies, key=age)[1] if copies else None
 
 
 def load_config() -> dict:
     local = _read_json(config_dir() / "config.json") or {}
-    path = _synced_path(local)
-    if path is None:
+    paths = _synced_paths(local)
+    if not paths:
         return local
-    shared = _read_json(path)
-    if shared is None:
-        if path.exists():
-            return local  # unreadable, e.g. mid-sync: keep going on the local copy
-        shared = _shared(local)  # first run with this cloud folder: start from this computer's settings
-        if not shared:
-            return local  # nothing to share yet; save_config creates the file
-        try:
-            _write_json(path, shared)
-        except OSError:
-            return local
-    return {**shared, **{k: local[k] for k in LOCAL_ONLY_KEYS if k in local}}
+    newest = _newest_copy(paths)
+    if newest is None:
+        if any(p.exists() for p in paths) or not _shared(local):
+            return local  # unreadable (mid-sync), or nothing to share yet: save_config creates the files
+        newest = {**_shared(local), "saved_at": time.time()}  # first run: start from this computer's settings
+    _write_copies(paths, newest)  # bring a cloud that missed a change up to date
+    return {**_shared(newest), **{k: local[k] for k in LOCAL_ONLY_KEYS if k in local}}
 
 
 def save_config(cfg: dict) -> None:
@@ -246,14 +353,13 @@ def save_config(cfg: dict) -> None:
         _write_json(config_dir() / "config.json", cfg)
     except OSError:
         pass
-    path = _synced_path(cfg)
+    paths = _synced_paths(cfg)
     shared = _shared(cfg)
-    # Don't touch the cloud for a window move, or create the folder with nothing to sync.
-    if path is not None and _read_json(path) != shared and (shared or path.exists()):
-        try:
-            _write_json(path, shared)
-        except OSError:
-            pass
+    copies = [_read_json(p) for p in paths]
+    # Don't touch the clouds for a window move, or create the folders with nothing to sync.
+    if all(c is not None and _shared(c) == shared for c in copies) or not (shared or any(p.exists() for p in paths)):
+        return
+    _write_copies(paths, {**shared, "saved_at": time.time()})
 
 
 def update_config(**changes) -> dict:
@@ -295,9 +401,19 @@ def _claude_credentials() -> dict:
     for data in sources:
         if isinstance(data, dict) and data.get("claudeAiOauth", {}).get("accessToken"):
             return data["claudeAiOauth"]
-    if claude_uses_bedrock():
+    env = claude_code_env()
+    if claude_uses_bedrock(env) or claude_uses_vertex(env) or claude_uses_foundry(env):
         raise NotUsed
     raise AuthError("not logged in — run `claude` and /login")
+
+
+def claude_account() -> str:
+    """Claude Code's signed-in account and organization, from its ~/.claude.json; "" if unknown."""
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    path = Path(cfg) / ".claude.json" if cfg else Path.home() / ".claude.json"
+    data = _read_json(path) or {}
+    acct = data.get("oauthAccount") if isinstance(data.get("oauthAccount"), dict) else {}
+    return "/".join(str(acct[k]) for k in ("accountUuid", "organizationUuid") if acct.get(k))
 
 
 def claude_code_env() -> dict[str, str]:
@@ -318,6 +434,17 @@ def claude_uses_bedrock(env: dict[str, str] | None = None) -> bool:
     return _truthy(env.get("CLAUDE_CODE_USE_BEDROCK")) or "bedrock" in env.get("ANTHROPIC_BASE_URL", "")
 
 
+def claude_uses_vertex(env: dict[str, str] | None = None) -> bool:
+    env = claude_code_env() if env is None else env
+    return _truthy(env.get("CLAUDE_CODE_USE_VERTEX"))
+
+
+def claude_uses_foundry(env: dict[str, str] | None = None) -> bool:
+    """Claude Code on Microsoft Foundry (Azure)."""
+    env = claude_code_env() if env is None else env
+    return _truthy(env.get("CLAUDE_CODE_USE_FOUNDRY"))
+
+
 def fetch_claude() -> ProviderUsage:
     creds = _claude_credentials()
     expires = creds.get("expiresAt")
@@ -327,7 +454,7 @@ def fetch_claude() -> ProviderUsage:
         "https://api.anthropic.com/api/oauth/usage",
         {"Authorization": f"Bearer {creds['accessToken']}", "anthropic-beta": "oauth-2025-04-20"},
     )
-    usage = ProviderUsage("Claude", plan=str(creds.get("subscriptionType") or ""))
+    usage = ProviderUsage("Claude", plan=str(creds.get("subscriptionType") or ""), account=claude_account())
 
     if isinstance(data.get("limits"), list) and data["limits"]:
         names = {"session": "Session (5h)", "weekly_all": "Weekly"}
@@ -367,14 +494,14 @@ def _codex_tokens() -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        if codex_bedrock_urls():
+        if codex_cloud_urls():
             raise NotUsed from None
         raise AuthError("not logged in — run `codex login`") from None
     except (OSError, json.JSONDecodeError) as e:
         raise AuthError(f"cannot read {path}: {e}") from None
     tokens = data.get("tokens") or {}
     if not tokens.get("access_token"):
-        if codex_bedrock_urls():
+        if codex_cloud_urls():
             raise NotUsed
         if data.get("OPENAI_API_KEY"):
             raise AuthError("API-key login has no plan limits — use `codex login` with ChatGPT")
@@ -382,14 +509,37 @@ def _codex_tokens() -> dict:
     return tokens
 
 
-def codex_bedrock_urls() -> list[str]:
-    """base_url values in Codex's config.toml that point at Bedrock (runtime or bedrock-mantle)."""
+def codex_base_urls() -> list[str]:
+    """Every base_url in Codex's config.toml (model providers other than ChatGPT)."""
     path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "config.toml"
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return []
-    return re.findall(r"""^\s*base_url\s*=\s*["']([^"']*bedrock[^"']*)["']""", text, re.MULTILINE)
+    return re.findall(r"""^\s*base_url\s*=\s*["']([^"']*)["']""", text, re.MULTILINE)
+
+
+def codex_bedrock_urls() -> list[str]:
+    """base_url values in Codex's config.toml that point at Bedrock (runtime or bedrock-mantle)."""
+    return [u for u in codex_base_urls() if "bedrock" in u]
+
+
+def codex_vertex_urls() -> list[str]:
+    """base_url values that point at Vertex AI, e.g. https://us-central1-aiplatform.googleapis.com/..."""
+    return [u for u in codex_base_urls() if "aiplatform.googleapis.com" in u]
+
+
+AZURE_HOST_RE = re.compile(r"^https?://([a-z0-9][a-z0-9-]*)\.(?:openai\.azure\.com|cognitiveservices\.azure\.com"
+                           r"|services\.ai\.azure\.com)", re.IGNORECASE)
+
+
+def codex_azure_urls() -> list[str]:
+    """base_url values that point at an Azure OpenAI / Foundry resource."""
+    return [u for u in codex_base_urls() if AZURE_HOST_RE.match(u)]
+
+
+def codex_cloud_urls() -> list[str]:
+    return codex_bedrock_urls() + codex_vertex_urls() + codex_azure_urls()
 
 
 def _codex_windows(prefix: str, rl: dict | None, out: list[Limit]) -> None:
@@ -414,7 +564,7 @@ def fetch_codex() -> ProviderUsage:
     if tokens.get("account_id"):
         headers["ChatGPT-Account-Id"] = tokens["account_id"]
     data = http_json("https://chatgpt.com/backend-api/wham/usage", headers)
-    usage = ProviderUsage("Codex", plan=str(data.get("plan_type") or ""))
+    usage = ProviderUsage("Codex", plan=str(data.get("plan_type") or ""), account=str(tokens.get("account_id") or ""))
     _codex_windows("", data.get("rate_limit"), usage.limits)
     _codex_windows("Code review", data.get("code_review_rate_limit"), usage.limits)
     extra = data.get("additional_rate_limits")
@@ -483,7 +633,7 @@ def bedrock_settings() -> dict | None:
 
 def _cached(key: str, max_age: float, compute):
     """compute() at most once per max_age seconds, remembered in a file across restarts."""
-    path = config_dir() / "bedrock-cache.json"
+    path = config_dir() / "cloud-cache.json"
     try:
         cache = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -611,6 +761,11 @@ def fetch_bedrock() -> ProviderUsage:
     regions = settings["regions"] or [session.region_name or "us-east-1"]
     usage = ProviderUsage("Bedrock")
     who = profile or "default"
+    try:  # the AWS account, so a synced cutoff only applies to it
+        usage.account = str(_cached(f"account:{who}", 86400,
+                                    lambda: session.client("sts").get_caller_identity()["Account"]))
+    except Exception:
+        pass
     month = datetime.now(timezone.utc).strftime("%Y-%m")
 
     def attempt(what, fn):
@@ -665,7 +820,478 @@ def fetch_bedrock() -> ProviderUsage:
     return usage
 
 
-PROVIDERS = (("Claude", fetch_claude), ("Codex", fetch_codex), ("Bedrock", fetch_bedrock))
+def _http_attempt(usage: ProviderUsage, expired: str):
+    """attempt(what, fn) for the REST-based clouds, like Bedrock's: a rejected login
+    fails the provider, anything else (a missing permission, say) becomes a note."""
+    def attempt(what, fn):
+        try:
+            return fn()
+        except HTTPStatusError as e:
+            if e.code == 401:
+                raise AuthError(expired) from None
+            usage.limits.append(Limit(f"⚠ {what}: {e}", None))
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError) as e:
+            usage.limits.append(Limit(f"⚠ {what}: {e or type(e).__name__}", None))
+        return None
+    return attempt
+
+
+def _rfc3339(when: datetime) -> str:
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Access tokens fetched this run, by cloud: (token, expires_at, extra).
+_TOKENS: dict[str, tuple[str, float, str]] = {}
+
+
+# --------------------------------------------------------------------------
+# Google Vertex AI (pay-per-token via Google Cloud credentials)
+# --------------------------------------------------------------------------
+#
+# Like Bedrock there are no plan windows. This shows today's token counts from
+# Cloud Monitoring and, when a Cloud Billing export to BigQuery is set up,
+# month-to-date Vertex AI spend, optionally against a monthly budget amount
+# (Google's Budgets API doesn't report spend, so the amount is given here). It
+# turns on by itself when Claude Code (CLAUDE_CODE_USE_VERTEX) or a Codex
+# base_url uses Vertex AI; config.json can override or disable it:
+#
+#     "vertex": {"projects": ["my-project"], "billing_table": "my-project.billing.gcp_billing_export_v1_XXXX",
+#                "budget": 500, "cost_interval": 21600, "metrics_interval": 900}
+#
+# Credentials are Application Default Credentials (`gcloud auth application-default
+# login`), with google-auth or the gcloud CLI as fallbacks for other ADC types.
+
+GCP_LOGIN = "gcloud auth application-default login"
+GCP_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+VERTEX_PROJECT_RE = re.compile(r"/projects/([^/]+)/")
+VERTEX_TOKEN_METRIC = "aiplatform.googleapis.com/publisher/online_serving/token_count"
+BQ_TABLE_RE = re.compile(r"^[\w.:-]+\.[\w-]+\.[\w-]+$")
+
+
+def vertex_settings() -> dict | None:
+    """What to query, or None when nothing on this machine uses Vertex AI."""
+    cfg = load_config().get("vertex")
+    if cfg is False:
+        return None
+    env = claude_code_env()
+    urls = codex_vertex_urls()
+    if not isinstance(cfg, dict):
+        if not (cfg is True or claude_uses_vertex(env) or urls):
+            return None
+        cfg = {}
+    projects = list(cfg.get("projects") or ([cfg["project"]] if cfg.get("project") else []))
+    if not projects:
+        if claude_uses_vertex(env):
+            projects.append(env.get("ANTHROPIC_VERTEX_PROJECT_ID") or env.get("GOOGLE_CLOUD_PROJECT")
+                            or env.get("GCLOUD_PROJECT") or "")
+        for url in urls:
+            m = VERTEX_PROJECT_RE.search(url)
+            projects.append(m.group(1) if m else "")
+    return {
+        "projects": list(dict.fromkeys(str(p) for p in projects if p)),
+        "billing_table": str(cfg.get("billing_table") or ""),
+        "budget": float(cfg.get("budget") or 0),
+        "cost_interval": max(MIN_INTERVAL, int(cfg.get("cost_interval", COST_INTERVAL))),
+        "metrics_interval": max(MIN_INTERVAL, int(cfg.get("metrics_interval", METRICS_INTERVAL))),
+    }
+
+
+def _gcp_adc() -> dict:
+    """The Application Default Credentials file that `gcloud auth application-default login` writes."""
+    path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not path:
+        if os.environ.get("CLOUDSDK_CONFIG"):
+            base = Path(os.environ["CLOUDSDK_CONFIG"])
+        elif sys.platform == "win32":
+            base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "gcloud"
+        else:
+            base = Path.home() / ".config" / "gcloud"
+        path = base / "application_default_credentials.json"
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _gcp_token(adc: dict) -> str:
+    cached = _TOKENS.get("gcp")
+    if cached and cached[1] - 60 > time.time():
+        return cached[0]
+    token, ttl = "", 3000.0
+    if adc.get("type") == "authorized_user" and adc.get("refresh_token"):
+        # A user login: trade the refresh token for an access token at Google, which issued it.
+        try:
+            resp = http_json("https://oauth2.googleapis.com/token", {}, auth_errors=False, form={
+                "grant_type": "refresh_token", "client_id": adc.get("client_id", ""),
+                "client_secret": adc.get("client_secret", ""), "refresh_token": adc["refresh_token"]})
+        except HTTPStatusError as e:
+            if e.code in (400, 401):
+                raise AuthError(f"Google login expired — run `{GCP_LOGIN}`") from None
+            raise
+        token, ttl = str(resp.get("access_token") or ""), float(resp.get("expires_in") or ttl)
+    if not token:
+        # Service accounts, workload identity and the like need google-auth to sign requests.
+        try:
+            import google.auth
+            import google.auth.transport.requests
+            creds, _ = google.auth.default(scopes=[GCP_SCOPE])
+            creds.refresh(google.auth.transport.requests.Request())
+            token = str(creds.token or "")
+        except Exception:
+            pass
+    if not token:
+        out = (run_cli(["gcloud", "auth", "application-default", "print-access-token"])
+               or run_cli(["gcloud", "auth", "print-access-token"]))
+        token = (out or "").strip()
+    if not token:
+        raise AuthError(f"no Google Cloud credentials — run `{GCP_LOGIN}`")
+    _TOKENS["gcp"] = (token, time.time() + ttl, "")
+    return token
+
+
+def _vertex_tokens(headers: dict, project: str, since: datetime) -> dict:
+    """Input/output tokens since `since` across every publisher model (Claude, Gemini, …) in the project."""
+    params = {
+        "filter": f'metric.type="{VERTEX_TOKEN_METRIC}"',
+        "interval.startTime": _rfc3339(since),
+        "interval.endTime": _rfc3339(datetime.now(timezone.utc)),
+        "aggregation.alignmentPeriod": "3600s",
+        "aggregation.perSeriesAligner": "ALIGN_SUM",
+        "aggregation.crossSeriesReducer": "REDUCE_SUM",
+        "aggregation.groupByFields": "metric.label.type",
+    }
+    url = f"https://monitoring.googleapis.com/v3/projects/{urllib.parse.quote(project)}/timeSeries?"
+    totals = {"in": 0.0, "out": 0.0}
+    while True:
+        data = http_json(url + urllib.parse.urlencode(params), headers, auth_errors=False)
+        for series in data.get("timeSeries", []):
+            key = {"input": "in", "output": "out"}.get(series.get("metric", {}).get("labels", {}).get("type"))
+            if key:
+                for point in series.get("points", []):
+                    value = point.get("value", {})
+                    totals[key] += float(value.get("int64Value") or value.get("doubleValue") or 0)
+        if not data.get("nextPageToken"):
+            return totals
+        params["pageToken"] = data["nextPageToken"]
+
+
+def _vertex_month_cost(headers: dict, table: str, projects: list[str]) -> dict:
+    """Month-to-date Vertex AI cost (after credits) of these projects, from the BigQuery billing export.
+
+    Claude and other partner models can bill under their own service names, so
+    those count too, not only "Vertex AI".
+    """
+    if not BQ_TABLE_RE.match(table):
+        raise ValueError("billing_table should look like project.dataset.table")
+    today = datetime.now(timezone.utc).date()
+    sql = (f"SELECT SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), "
+           f"ANY_VALUE(currency) FROM `{table}` "
+           "WHERE export_time >= TIMESTAMP(@start) AND invoice.month = @month AND project.id IN UNNEST(@projects) "
+           "AND REGEXP_CONTAINS(LOWER(service.description), r'vertex|claude|anthropic|gemini')")
+
+    def param(name, value):
+        return {"name": name, "parameterType": {"type": "STRING"}, "parameterValue": {"value": value}}
+
+    body = {
+        "query": sql, "useLegacySql": False, "parameterMode": "NAMED", "timeoutMs": 30000,
+        "queryParameters": [
+            param("start", today.replace(day=1).isoformat()),
+            param("month", today.strftime("%Y%m")),
+            {"name": "projects", "parameterType": {"type": "ARRAY", "arrayType": {"type": "STRING"}},
+             "parameterValue": {"arrayValues": [{"value": p} for p in projects]}},
+        ],
+    }
+    url = f"https://bigquery.googleapis.com/bigquery/v2/projects/{urllib.parse.quote(projects[0])}/queries"
+    data = http_json(url, headers, timeout=40, body=body, auth_errors=False)
+    if not data.get("jobComplete"):
+        raise RuntimeError("billing query still running")
+    cells = (data.get("rows") or [{"f": [{}, {}]}])[0]["f"]
+    return {"amount": float(cells[0].get("v") or 0), "unit": cells[1].get("v") or "USD"}
+
+
+def fetch_vertex() -> ProviderUsage:
+    settings = vertex_settings()
+    if settings is None:
+        raise NotUsed
+    adc = _gcp_adc()
+    headers = {"Authorization": f"Bearer {_gcp_token(adc)}"}
+    if adc.get("quota_project_id"):
+        headers["x-goog-user-project"] = adc["quota_project_id"]
+    projects = settings["projects"]
+    if not projects:
+        fallback = adc.get("quota_project_id") or (run_cli(["gcloud", "config", "get-value", "project"]) or "").strip()
+        projects = [fallback] if fallback else []
+    if not projects:
+        raise RuntimeError('no Google Cloud project — set "projects" in the vertex section of config.json')
+    usage = ProviderUsage("Vertex", account=",".join(sorted(projects)))
+    attempt = _http_attempt(usage, f"Google login expired — run `{GCP_LOGIN}`")
+    who = ",".join(projects)
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+
+    table = settings["billing_table"]
+    if table:
+        cost = attempt("billing export", lambda: _cached(f"vertex:cost:{who}:{table}:{month}", settings["cost_interval"],
+                                                         lambda: _vertex_month_cost(headers, table, projects)))
+        if cost:
+            usage.summary = _money(cost["amount"], cost["unit"])
+            budget = settings["budget"]
+            if budget:
+                usage.limits.append(Limit(f"This month {usage.summary} / {_money(budget, cost['unit'])}",
+                                          cost["amount"] / budget * 100, _next_period("MONTHLY")))
+            else:
+                usage.limits.append(Limit(f"This month {usage.summary}", None, _next_period("MONTHLY")))
+
+    midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    tokens_in = tokens_out = 0.0
+    got_tokens = False
+    for project in projects:
+        t = attempt(f"Monitoring {project}", lambda p=project: _cached(
+            f"vertex:tokens:{p}:{midnight.date()}", settings["metrics_interval"],
+            lambda: _vertex_tokens(headers, p, midnight)))
+        if t:
+            got_tokens = True
+            tokens_in += t["in"]
+            tokens_out += t["out"]
+    if got_tokens:
+        usage.limits.append(Limit(f"Tokens today {_human(tokens_in)} in · {_human(tokens_out)} out", None))
+        if not usage.summary:
+            usage.summary = f"{_human(tokens_in + tokens_out)} tok"
+    return usage
+
+
+# --------------------------------------------------------------------------
+# Azure OpenAI / Microsoft Foundry (pay-per-token via Azure credentials)
+# --------------------------------------------------------------------------
+#
+# Spend against an Azure budget (a real percentage: the Consumption API reports
+# current spend), month-to-date cost of the Azure OpenAI / Foundry resources
+# from Cost Management, and today's token counts from Azure Monitor. It turns on
+# by itself when a Codex base_url points at an Azure resource (*.openai.azure.com,
+# *.cognitiveservices.azure.com, *.services.ai.azure.com) or Claude Code uses
+# Foundry (CLAUDE_CODE_USE_FOUNDRY); config.json can override or disable it:
+#
+#     "azure": {"subscription": "<id>", "resources": ["my-openai"], "budget": "ai-monthly",
+#               "cost_management": true, "cost_interval": 21600, "metrics_interval": 900}
+#
+# Credentials come from the Azure CLI (`az login`), or azure-identity if installed.
+
+ARM = "https://management.azure.com"
+AZURE_LOGIN = "az login"
+AZURE_KINDS = {"openai", "aiservices"}
+# Azure OpenAI's token metrics, then the newer Foundry "model usage" ones for resources without them.
+AZURE_TOKEN_METRICS = (("ProcessedPromptTokens", "GeneratedTokens"), ("InputTokens", "OutputTokens"))
+AZURE_TIME_GRAINS = {"Monthly": "MONTHLY", "BillingMonth": "MONTHLY", "Quarterly": "QUARTERLY",
+                     "BillingQuarter": "QUARTERLY", "Annually": "ANNUALLY", "BillingAnnual": "ANNUALLY"}
+
+
+def azure_settings() -> dict | None:
+    """What to query, or None when nothing on this machine uses Azure OpenAI or Foundry."""
+    cfg = load_config().get("azure")
+    if cfg is False:
+        return None
+    env = claude_code_env()
+    urls = codex_azure_urls()
+    foundry = claude_uses_foundry(env)
+    if not isinstance(cfg, dict):
+        if not (cfg is True or foundry or urls):
+            return None
+        cfg = {}
+    resources = list(cfg.get("resources") or [])
+    if not resources:
+        if foundry:
+            m = AZURE_HOST_RE.match(env.get("ANTHROPIC_FOUNDRY_BASE_URL", ""))
+            resources.append(env.get("ANTHROPIC_FOUNDRY_RESOURCE") or (m.group(1) if m else ""))
+        for url in urls:
+            resources.append(AZURE_HOST_RE.match(url).group(1))
+    return {
+        "subscription": str(cfg.get("subscription") or env.get("AZURE_SUBSCRIPTION_ID") or ""),
+        "resources": list(dict.fromkeys(str(r) for r in resources if r)),
+        "budget": str(cfg.get("budget") or ""),
+        "cost_management": cfg.get("cost_management", True),
+        "cost_interval": max(MIN_INTERVAL, int(cfg.get("cost_interval", COST_INTERVAL))),
+        "metrics_interval": max(MIN_INTERVAL, int(cfg.get("metrics_interval", METRICS_INTERVAL))),
+    }
+
+
+def _azure_token() -> tuple[str, str]:
+    """(Azure Resource Manager access token, the Azure CLI's current subscription or "")."""
+    cached = _TOKENS.get("azure")
+    if cached and cached[1] - 60 > time.time():
+        return cached[0], cached[2]
+    token, expires, sub = "", time.time() + 3000, ""
+    out = run_cli(["az", "account", "get-access-token", "--resource", ARM + "/", "--output", "json"])
+    if out:
+        try:
+            data = json.loads(out)
+            token, sub = str(data.get("accessToken") or ""), str(data.get("subscription") or "")
+            expires = float(data.get("expires_on") or expires)
+        except (ValueError, AttributeError):
+            token = ""
+    if not token:
+        try:
+            from azure.identity import DefaultAzureCredential
+            access = DefaultAzureCredential().get_token(ARM + "/.default")
+            token, expires = access.token, float(access.expires_on)
+        except Exception:
+            pass
+    if not token:
+        raise AuthError(f"no Azure credentials — run `{AZURE_LOGIN}`")
+    _TOKENS["azure"] = (token, expires, sub)
+    return token, sub
+
+
+def _arm_list(headers: dict, path: str) -> list[dict]:
+    url, items = ARM + path, []
+    while url:
+        data = http_json(url, headers, auth_errors=False)
+        items += data.get("value") or []
+        url = data.get("nextLink")
+    return items
+
+
+def _azure_resource_ids(headers: dict, subscription: str, resources: list[str]) -> list[str]:
+    """ARM IDs of the given accounts (names or IDs); every OpenAI / AI Services account if none are given."""
+    ids = [r for r in resources if r.startswith("/")]
+    names = {r.lower() for r in resources if not r.startswith("/")}
+    if names or not resources:
+        subs = [subscription] if subscription else [
+            s["subscriptionId"] for s in _arm_list(headers, "/subscriptions?api-version=2022-12-01")]
+        for sub in subs:
+            for acct in _arm_list(headers, f"/subscriptions/{sub}/providers/Microsoft.CognitiveServices"
+                                           "/accounts?api-version=2023-05-01"):
+                subdomain = str((acct.get("properties") or {}).get("customSubDomainName") or "").lower()
+                if (acct.get("name", "").lower() in names or subdomain in names
+                        or (not resources and str(acct.get("kind", "")).lower() in AZURE_KINDS)):
+                    ids.append(acct["id"])
+    return list(dict.fromkeys(ids))
+
+
+def _azure_tokens(headers: dict, resource_id: str, since: datetime) -> dict:
+    """Input/output tokens since `since` for one Azure OpenAI / Foundry resource."""
+    span = f"{_rfc3339(since)}/{_rfc3339(datetime.now(timezone.utc))}"
+    error = None
+    for names in AZURE_TOKEN_METRICS:
+        query = urllib.parse.urlencode({"api-version": "2023-10-01", "metricnames": ",".join(names),
+                                        "timespan": span, "interval": "PT1H", "aggregation": "Total"})
+        try:
+            data = http_json(f"{ARM}{resource_id}/providers/Microsoft.Insights/metrics?{query}",
+                             headers, auth_errors=False)
+        except HTTPStatusError as e:
+            if e.code != 400:  # 400: this kind of resource doesn't have these metrics
+                raise
+            error = e
+            continue
+        totals = {"in": 0.0, "out": 0.0}
+        for metric in data.get("value", []):
+            key = "in" if (metric.get("name") or {}).get("value") == names[0] else "out"
+            for series in metric.get("timeseries", []):
+                totals[key] += sum(point.get("total") or 0 for point in series.get("data", []))
+        return totals
+    raise error
+
+
+def _azure_month_cost(headers: dict, subscription: str, resource_ids: list[str]) -> dict:
+    """Month-to-date actual cost of these resources, from Cost Management."""
+    body = {
+        "type": "ActualCost", "timeframe": "MonthToDate",
+        "dataset": {
+            "granularity": "None",
+            "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}},
+            # Cost Management keeps resource IDs in lower case.
+            "filter": {"dimensions": {"name": "ResourceId", "operator": "In",
+                                      "values": [r.lower() for r in resource_ids]}},
+        },
+    }
+    data = http_json(f"{ARM}/subscriptions/{subscription}/providers/Microsoft.CostManagement/query"
+                     "?api-version=2023-03-01", headers, body=body, auth_errors=False)
+    props = data.get("properties") or {}
+    columns = props.get("columns") or []
+    cost = next((i for i, c in enumerate(columns) if c.get("type") == "Number"), 0)
+    currency = next((i for i, c in enumerate(columns) if c.get("name") == "Currency"), None)
+    total, unit = 0.0, "USD"
+    for row in props.get("rows") or []:
+        total += float(row[cost] or 0)
+        if currency is not None and row[currency]:
+            unit = row[currency]
+    return {"amount": total, "unit": unit}
+
+
+def _azure_budget(headers: dict, subscription: str, name: str) -> dict:
+    """A budget by name at subscription scope, or by its full ARM ID (e.g. on a resource group)."""
+    path = name if name.startswith("/") else (
+        f"/subscriptions/{subscription}/providers/Microsoft.Consumption/budgets/{urllib.parse.quote(name)}")
+    props = http_json(f"{ARM}{path}?api-version=2023-05-01", headers, auth_errors=False)["properties"]
+    spend = props.get("currentSpend") or {}
+    return {"spent": float(spend.get("amount") or 0), "limit": float(props.get("amount") or 0),
+            "unit": spend.get("unit") or "USD", "time_unit": AZURE_TIME_GRAINS.get(props.get("timeGrain"))}
+
+
+def fetch_azure() -> ProviderUsage:
+    settings = azure_settings()
+    if settings is None:
+        raise NotUsed
+    token, cli_sub = _azure_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    subscription = settings["subscription"] or cli_sub
+    usage = ProviderUsage("Azure", account=":".join(filter(None, (subscription, ",".join(settings["resources"])))))
+    attempt = _http_attempt(usage, f"Azure login expired — run `{AZURE_LOGIN}`")
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+
+    wanted = settings["resources"]
+    ids = attempt("resources", lambda: _cached(
+        f"azure:resources:{subscription}:{','.join(wanted)}", settings["cost_interval"],
+        lambda: _azure_resource_ids(headers, subscription, wanted))) or []
+    if not ids and not usage.limits:
+        usage.limits.append(Limit("⚠ no Azure OpenAI resource found — set \"resources\" in config.json", None))
+    by_sub: dict[str, list[str]] = {}
+    for rid in ids:
+        by_sub.setdefault(rid.split("/")[2], []).append(rid)
+
+    budget_sub = subscription or next(iter(by_sub), "")
+    if settings["budget"] and (budget_sub or settings["budget"].startswith("/")):
+        name = settings["budget"]
+        b = attempt("budget", lambda: _cached(f"azure:budget:{budget_sub}:{name}", settings["cost_interval"],
+                                              lambda: _azure_budget(headers, budget_sub, name)))
+        if b:
+            pct = b["spent"] / b["limit"] * 100 if b["limit"] else 0.0
+            usage.limits.append(Limit(f"Budget {_money(b['spent'], b['unit'])} / {_money(b['limit'], b['unit'])}",
+                                      pct, _next_period(b["time_unit"])))
+
+    if settings["cost_management"] and by_sub:
+        total, unit, got_cost = 0.0, "USD", False
+        for sub, rids in by_sub.items():
+            key = f"azure:cost:{sub}:{','.join(sorted(r.lower() for r in rids))}:{month}"
+            cost = attempt("Cost Management", lambda s=sub, r=rids, k=key: _cached(
+                k, settings["cost_interval"], lambda: _azure_month_cost(headers, s, r)))
+            if cost:
+                got_cost = True
+                total += cost["amount"]
+                unit = cost["unit"]
+        if got_cost:
+            usage.summary = _money(total, unit)
+            usage.limits.append(Limit(f"This month {usage.summary}", None, _next_period("MONTHLY")))
+
+    midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    tokens_in = tokens_out = 0.0
+    got_tokens = False
+    for rid in ids:
+        t = attempt(f"Monitor {rid.rsplit('/', 1)[-1]}", lambda r=rid: _cached(
+            f"azure:tokens:{r.lower()}:{midnight.date()}", settings["metrics_interval"],
+            lambda: _azure_tokens(headers, r, midnight)))
+        if t:
+            got_tokens = True
+            tokens_in += t["in"]
+            tokens_out += t["out"]
+    if got_tokens:
+        usage.limits.append(Limit(f"Tokens today {_human(tokens_in)} in · {_human(tokens_out)} out", None))
+        if not usage.summary:
+            usage.summary = f"{_human(tokens_in + tokens_out)} tok"
+    return usage
+
+
+PROVIDERS = (("Claude", fetch_claude), ("Codex", fetch_codex), ("Bedrock", fetch_bedrock),
+             ("Vertex", fetch_vertex), ("Azure", fetch_azure))
 
 
 def fetch_all() -> list[ProviderUsage]:
@@ -691,11 +1317,13 @@ def fetch_all() -> list[ProviderUsage]:
 # Each provider can have its own cutoff, a percentage of its fullest limit. The first
 # refresh that finds a provider at or over its cutoff stops the CLIs that draw on it
 # (Claude Code for Claude, the Codex CLI for Codex, whichever of the two runs on
-# Bedrock for Bedrock), then clears that cutoff so the CLIs can be started again.
-# With synced settings every computer stops its own CLIs. Set from the menu, or in
-# config.json:
+# the cloud for Bedrock, Vertex AI and Azure), then clears that cutoff so the CLIs can be started again.
+# With synced settings every computer signed in to the same account stops its own
+# CLIs; a cutoff set from the menu belongs to the account signed in there, so another
+# computer's different account is left alone. In config.json a number applies to any
+# account:
 #
-#     "cutoff": {"Claude": 95, "Codex": 90, "Bedrock": 100}
+#     "cutoff": {"Claude": {"<account uuid>/<org uuid>": 95}, "Codex": 90, "Bedrock": 100}
 
 CUTOFF_CHOICES = (80, 90, 95, 99)
 CUTOFF_SYNC_WINDOW = 3600  # how long other computers act on a cutoff reached on one of them
@@ -706,10 +1334,15 @@ SCRIPT_RUNTIMES = {"node", "bun", "deno"}
 DESKTOP_APP_PATHS = (".app/contents/", "/anthropicclaude/", "/windowsapps/")
 
 
-def cutoff_for(cfg: dict, name: str) -> float | None:
-    """The cutoff percentage set for this provider, or None if it has none."""
+def cutoff_for(cfg: dict, name: str, account: str = "") -> float | None:
+    """The cutoff percentage set for this provider and account, or None if it has none.
+
+    A number applies to any account; {account: number} only to those accounts.
+    """
     cutoffs = cfg.get("cutoff")
     value = cutoffs.get(name) if isinstance(cutoffs, dict) else None
+    if isinstance(value, dict):
+        value = value.get(account) if account else None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value) if 0 < value <= 100 else None
@@ -720,29 +1353,41 @@ def _dict_setting(cfg: dict, key: str) -> dict:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def set_cutoff(name: str, value: int | None) -> dict:
-    """Save a provider's cutoff (None turns it off); returns the updated config."""
-    cfg = load_config()  # re-read so hand edits and other computers' changes are kept
+def _put_cutoff(cfg: dict, name: str, account: str, value: float | None) -> None:
+    """Set (or with None, remove) a provider's cutoff for this account, or for any account without one."""
     cutoffs = _dict_setting(cfg, "cutoff")
-    if value:
+    if account:
+        per_account = _dict_setting(cutoffs, name)  # an any-account number gives way to this one
+        per_account.pop(account, None)
+        if value:
+            per_account[account] = value
+        cutoffs[name] = per_account
+    elif value:
         cutoffs[name] = value
     else:
         cutoffs.pop(name, None)
+    cutoffs = {k: v for k, v in cutoffs.items() if v != {}}
     if cutoffs:
         cfg["cutoff"] = cutoffs
     else:
         cfg.pop("cutoff", None)
+
+
+def set_cutoff(name: str, value: int | None, account: str = "") -> dict:
+    """Save a provider's cutoff for an account (None turns it off); returns the updated config."""
+    cfg = load_config()  # re-read so hand edits and other computers' changes are kept
+    _put_cutoff(cfg, name, account, value)
     save_config(cfg)
     return cfg
 
 
-def cutoff_menu_providers(data: list[ProviderUsage]) -> list[str]:
-    """Providers whose cutoff the menu offers: those shown, or Claude and Codex before the first fetch."""
-    return [u.name for u in data] or ["Claude", "Codex"]
+def cutoff_menu_providers(data: list[ProviderUsage]) -> list[tuple[str, str]]:
+    """(provider, account) of each provider shown, whose cutoff the menu offers."""
+    return [(u.name, u.account) for u in data]
 
 
-def cutoff_menu_label(cfg: dict, name: str) -> str:
-    cutoff = cutoff_for(cfg, name)
+def cutoff_menu_label(cfg: dict, name: str, account: str = "") -> str:
+    cutoff = cutoff_for(cfg, name, account)
     return f"Stop {name} at: " + (f"{cutoff:.0f}%" if cutoff is not None else "off")
 
 
@@ -752,9 +1397,14 @@ def cutoff_clis(name: str) -> set[str]:
         return {"claude"}
     if name == "Codex":
         return {"codex"}
-    if name == "Bedrock":
-        return ({"claude"} if claude_uses_bedrock() else set()) | ({"codex"} if codex_bedrock_urls() else set())
-    return set()
+    claude, codex = {
+        "Bedrock": (claude_uses_bedrock, codex_bedrock_urls),
+        "Vertex": (claude_uses_vertex, codex_vertex_urls),
+        "Azure": (claude_uses_foundry, codex_azure_urls),
+    }.get(name, (None, None))
+    if claude is None:
+        return set()
+    return ({"claude"} if claude() else set()) | ({"codex"} if codex() else set())
 
 
 def cli_name(argv0: str, argv1: str = "") -> str | None:
@@ -850,19 +1500,20 @@ def enforce_cutoffs(results: list[ProviderUsage]) -> None:
     What happened is noted in the provider's limits.
     """
     cfg = load_config()
-    cutoffs, reached, handled = (_dict_setting(cfg, k) for k in ("cutoff", "cutoff_reached", "cutoff_handled"))
+    reached, handled = (_dict_setting(cfg, k) for k in ("cutoff_reached", "cutoff_handled"))
     now = time.time()
     todo = []  # (provider, cutoff, where it was reached)
     for u in results:
-        cutoff = cutoff_for(cfg, u.name)
+        cutoff = cutoff_for(cfg, u.name, u.account)
         top = top_limit(u)
         mark = reached.get(u.name)
         if cutoff is not None and top is not None and top.percent >= cutoff:
-            cutoffs.pop(u.name, None)
-            reached[u.name] = {"at": now, "cutoff": cutoff}
+            _put_cutoff(cfg, u.name, u.account, None)
+            reached[u.name] = {"at": now, "cutoff": cutoff, "account": u.account}
             handled[u.name] = now
             todo.append((u, cutoff, ""))
         elif (isinstance(mark, dict) and all(isinstance(mark.get(k), (int, float)) for k in ("at", "cutoff"))
+              and mark.get("account", "") == u.account  # another computer's other account is none of ours
               and abs(now - mark["at"]) < CUTOFF_SYNC_WINDOW and handled.get(u.name) != mark["at"]):
             handled[u.name] = mark["at"]
             todo.append((u, float(mark["cutoff"]), " on another computer"))
@@ -878,10 +1529,6 @@ def enforce_cutoffs(results: list[ProviderUsage]) -> None:
         else:
             note = f"no {what} running"
         u.limits.append(Limit(f"⛔ Cutoff {cutoff:.0f}% reached{where} — {note}; cutoff cleared", None))
-    if cutoffs:
-        cfg["cutoff"] = cutoffs
-    else:
-        cfg.pop("cutoff", None)
     cfg["cutoff_reached"], cfg["cutoff_handled"] = reached, handled
     save_config(cfg)
 
@@ -922,6 +1569,8 @@ THEME = {
     "claude": "#d97757",
     "codex": "#10a37f",
     "bedrock": "#ff9900",
+    "vertex": "#4285f4",
+    "azure": "#0078d4",
 }
 BAR_WIDTH = 210
 BAR_HEIGHT = 6
@@ -1018,15 +1667,15 @@ class Widget:
         self.cutoff_vars = []
         menu.add_command(label="Refresh now", command=self.refresh)
         menu.add_checkbutton(label="Always on top", variable=self.topmost_var, command=self._toggle_topmost)
-        for name in cutoff_menu_providers(self.data):
-            cutoff = cutoff_for(self.cfg, name)
+        for name, account in cutoff_menu_providers(self.data):
+            cutoff = cutoff_for(self.cfg, name, account)
             var = tk.IntVar(value=int(cutoff) if cutoff is not None else 0)
             self.cutoff_vars.append(var)  # Tk forgets variables Python no longer references
             sub = tk.Menu(menu, tearoff=0)
             for value in (0, *CUTOFF_CHOICES):
                 sub.add_radiobutton(label=f"{value}%" if value else "Off", variable=var, value=value,
-                                    command=lambda n=name, v=value: self._set_cutoff(n, v))
-            menu.add_cascade(label=cutoff_menu_label(self.cfg, name), menu=sub)
+                                    command=lambda n=name, a=account, v=value: self._set_cutoff(n, a, v))
+            menu.add_cascade(label=cutoff_menu_label(self.cfg, name, account), menu=sub)
         about = tk.Menu(menu, tearoff=0)
         about.add_command(label=f"LLM Usage Widget — Version {__version__}", state="disabled")
         about.add_command(label=f"Source: {REPO_URL}", command=lambda: webbrowser.open(REPO_URL))
@@ -1042,8 +1691,8 @@ class Widget:
         finally:
             self.menu.grab_release()
 
-    def _set_cutoff(self, name: str, value: int):
-        self.cfg = set_cutoff(name, value or None)
+    def _set_cutoff(self, name: str, account: str, value: int):
+        self.cfg = set_cutoff(name, value or None, account)
 
     def _toggle_topmost(self):
         self.cfg = update_config(topmost=self.topmost_var.get())
@@ -1074,7 +1723,7 @@ class Widget:
             # Keep the last good numbers on transient failures, flagged as stale.
             old = previous.get(u.name)
             if u.error and not u.limits and old and old.limits:
-                u.limits, u.plan = old.limits, old.plan
+                u.limits, u.plan, u.account = old.limits, old.plan, old.account
         self.data = results
         self.cfg = self._load_config()  # a reached cutoff was cleared, or another computer changed a setting
         self.render()
@@ -1164,12 +1813,15 @@ USAGE_PAGES = {
     "Claude": "https://claude.ai/settings/usage",
     "Codex": "https://chatgpt.com/codex/settings/usage",
     "Bedrock": "https://console.aws.amazon.com/costmanagement/home#/cost-explorer",
+    "Vertex": "https://console.cloud.google.com/billing/reports",
+    "Azure": "https://portal.azure.com/#view/Microsoft_Azure_CostManagement/Menu/~/costanalysis",
 }
+CLOUD_PROVIDERS = {"Bedrock", "Vertex", "Azure"}  # only listed when in use
 
 
 def usage_pages(data: list[ProviderUsage]) -> dict[str, str]:
     shown = {u.name for u in data}
-    return {name: url for name, url in USAGE_PAGES.items() if name in shown or (not data and name != "Bedrock")}
+    return {name: url for name, url in USAGE_PAGES.items() if name in shown or (not data and name not in CLOUD_PROVIDERS)}
 
 # Three rising bars, drawn white like the other top-bar icons; tinted when a limit runs high.
 ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
@@ -1248,13 +1900,13 @@ class Tray:
         for u in results:
             old = previous.get(u.name)
             if u.error and not u.limits and old and old.limits:
-                u.limits, u.plan = old.limits, old.plan
+                u.limits, u.plan, u.account = old.limits, old.plan, old.account
         self.data = results
         self.render()
         return False
 
-    def _set_cutoff(self, _item, name: str, value: int):
-        set_cutoff(name, value or None)
+    def _set_cutoff(self, _item, name: str, account: str, value: int):
+        set_cutoff(name, value or None, account)
         self.GLib.idle_add(self.render)  # not from inside the menu's own signal handler
 
     def _tick(self):
@@ -1323,16 +1975,16 @@ class Tray:
             item.connect("activate", lambda _w, u=url: Gtk.show_uri_on_window(None, u, Gtk.get_current_event_time()))
             menu.append(item)
         cfg = load_config()
-        for name in cutoff_menu_providers(self.data):
-            cutoff = cutoff_for(cfg, name)
+        for name, account in cutoff_menu_providers(self.data):
+            cutoff = cutoff_for(cfg, name, account)
             sub = Gtk.Menu()
             for value in (0, *CUTOFF_CHOICES):
                 choice = Gtk.CheckMenuItem(label=f"{value}%" if value else "Off")
                 choice.set_draw_as_radio(True)
                 choice.set_active(value == (cutoff or 0))
-                choice.connect("activate", self._set_cutoff, name, value)
+                choice.connect("activate", self._set_cutoff, name, account, value)
                 sub.append(choice)
-            item = Gtk.MenuItem(label=cutoff_menu_label(cfg, name))
+            item = Gtk.MenuItem(label=cutoff_menu_label(cfg, name, account))
             item.set_submenu(sub)
             menu.append(item)
         about = Gtk.Menu()
@@ -1743,15 +2395,15 @@ class DesktopTray:
     def _toggle_taskbar_text(self):
         self.cfg = update_config(taskbar_text=not self.cfg.get("taskbar_text", True))
 
-    def _cutoff_action(self, name: str, value: int):
+    def _cutoff_action(self, name: str, account: str, value: int):
         def action():
-            self.cfg = set_cutoff(name, value or None)
+            self.cfg = set_cutoff(name, value or None, account)
             if sys.platform != "win32":  # on Windows the menu is rebuilt when it is opened
                 self._on_main(self._render)
         return action
 
-    def _cutoff_checked(self, name: str, value: int):
-        return lambda _item: (cutoff_for(self.cfg, name) or 0) == value
+    def _cutoff_checked(self, name: str, account: str, value: int):
+        return lambda _item: (cutoff_for(self.cfg, name, account) or 0) == value
 
     def _quit(self):
         if self.strip:
@@ -1793,10 +2445,10 @@ class DesktopTray:
         items.append(item("Refresh now", lambda: self.wake.set()))
         for name, url in usage_pages(self.data).items():
             items.append(item(f"Open {name} usage page", (lambda u: lambda: webbrowser.open(u))(url)))
-        for name in cutoff_menu_providers(self.data):
-            items.append(item(cutoff_menu_label(self.cfg, name), self.pystray.Menu(*(
-                item(f"{value}%" if value else "Off", self._cutoff_action(name, value),
-                     checked=self._cutoff_checked(name, value), radio=True)
+        for name, account in cutoff_menu_providers(self.data):
+            items.append(item(cutoff_menu_label(self.cfg, name, account), self.pystray.Menu(*(
+                item(f"{value}%" if value else "Off", self._cutoff_action(name, account, value),
+                     checked=self._cutoff_checked(name, account, value), radio=True)
                 for value in (0, *CUTOFF_CHOICES)))))
         if self.strip:
             items.append(item("Show usage on the taskbar", lambda: self._toggle_taskbar_text(),
@@ -1829,7 +2481,7 @@ class DesktopTray:
         for u in results:
             old = previous.get(u.name)
             if u.error and not u.limits and old and old.limits:
-                u.limits, u.plan = old.limits, old.plan
+                u.limits, u.plan, u.account = old.limits, old.plan, old.account
         self.data = results
         self.cfg = load_config()  # a reached cutoff was cleared, or another computer changed a setting
         self._render()

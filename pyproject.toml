@@ -1,0 +1,24 @@
+# Tool settings only; the app is a single script and is not packaged from here.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
+
+[tool.coverage.run]
+source = ["usage_widget"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+target-version = "py39"
+line-length = 130
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+ignore = ["E741"]  # `l` in short lambdas
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B023"]

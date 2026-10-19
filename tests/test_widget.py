@@ -48,6 +48,25 @@ def retry_tk_startup(monkeypatch):
     monkeypatch.setattr(tk, "Tk", Tk)
 
 
+@pytest.fixture(scope="module")
+def shared_root(tk_available):
+    root = tk.Tk()
+    root.withdraw()
+    yield root
+    root.destroy()
+
+
+@pytest.fixture(autouse=True)
+def one_tk_on_macos(request, monkeypatch):
+    """The python.org macOS builds' Tk now and then segfaults in update() on a Tk created after an
+    earlier one was destroyed in the same process, so there every window the tests make is a
+    Toplevel of one hidden Tk that lives for the whole module."""
+    if sys.platform != "darwin":
+        return
+    root = request.getfixturevalue("shared_root")
+    monkeypatch.setattr(tk, "Tk", lambda *args, **kwargs: tk.Toplevel(root))
+
+
 @pytest.fixture
 def inline_threads(monkeypatch):
     class InlineThread:

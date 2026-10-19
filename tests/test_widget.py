@@ -221,10 +221,20 @@ def test_widget_cutoff_menu(widget):
 
 
 def test_widget_reloads_settings_after_a_fetch(widget):
-    w.update_config(cutoff={"Claude": 80})  # e.g. changed on another computer
+    w.update_config(cutoff={"Claude": 99})  # e.g. changed on another computer; above the sample's 95%
     widget.refresh()
     widget.root.update()
-    assert widget.cfg["cutoff"] == {"Claude": 80}
+    assert widget.cfg["cutoff"] == {"Claude": 99}
+
+
+def test_widget_picks_up_a_reached_cutoff(widget, monkeypatch):
+    monkeypatch.setattr(w, "find_cli_processes", lambda: [])
+    w.update_config(cutoff={"Claude": 90}, x=7)  # the sample's Claude is at 95%
+    widget.refresh()
+    widget.root.update()
+    assert "cutoff" not in widget.cfg  # cleared once reached, so a later drag can't save it back
+    assert widget.cfg["x"] == 7
+    assert any(t.startswith("⛔ Cutoff 90% reached") for t in texts(widget.body))
 
 
 # -- TaskbarStrip._draw ----------------------------------------------------------

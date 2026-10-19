@@ -114,7 +114,7 @@ usage_widget.py --interval 300   # refresh every 5 minutes (default 180 s, min 6
 
 Each provider can have its own cutoff: a percentage of its fullest limit at which the widget stops the
 CLIs that use that provider's quota. Choose one from *Stop Claude at*, *Stop Codex at*, etc. in the menu
-(Off, 80%, 90%, 95% or 99%). A cutoff chosen in the menu belongs to the account that is signed in: the
+(Off, or every 5% from above the provider's current usage up to 95%, since a lower one would be reached at once). A cutoff chosen in the menu belongs to the account that is signed in: the
 Claude account and organization in `~/.claude.json`, the ChatGPT account in `~/.codex/auth.json`, the AWS
 account, the Google Cloud projects or the Azure subscription and resources. So with [synced settings](#settings-sync),
 a computer signed in to a different account is not affected. You can also set any value from 1 to 100

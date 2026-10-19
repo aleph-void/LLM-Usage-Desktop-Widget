@@ -1325,7 +1325,7 @@ def fetch_all() -> list[ProviderUsage]:
 #
 #     "cutoff": {"Claude": {"<account uuid>/<org uuid>": 95}, "Codex": 90, "Bedrock": 100}
 
-CUTOFF_CHOICES = (80, 90, 95, 99)
+CUTOFF_STEP = 5  # the menu offers every multiple of this above the current usage, below 100
 CUTOFF_SYNC_WINDOW = 3600  # how long other computers act on a cutoff reached on one of them
 # npm-installed CLIs run as `node <script>`; these mark the script's package.
 CLI_PACKAGES = {"claude": "@anthropic-ai/claude-code/", "codex": "@openai/codex/"}
@@ -1381,9 +1381,24 @@ def set_cutoff(name: str, value: int | None, account: str = "") -> dict:
     return cfg
 
 
-def cutoff_menu_providers(data: list[ProviderUsage]) -> list[tuple[str, str]]:
-    """(provider, account) of each provider shown, whose cutoff the menu offers."""
-    return [(u.name, u.account) for u in data]
+def cutoff_choices(cfg: dict, u: ProviderUsage) -> list[int]:
+    """The cutoffs the menu offers for a provider: off (0), then every CUTOFF_STEP above its usage, below 100.
+
+    Anything at or below the fullest limit would be reached at once, so it isn't offered.
+    A whole-number cutoff set by hand is listed too, so the menu can show it as chosen.
+    """
+    top = top_limit(u)
+    used = top.percent if top is not None else 0
+    choices = {v for v in range(CUTOFF_STEP, 100, CUTOFF_STEP) if v > used}
+    current = cutoff_for(cfg, u.name, u.account)
+    if current is not None and current > used and current.is_integer():
+        choices.add(int(current))
+    return [0, *sorted(choices)]
+
+
+def cutoff_menu_providers(cfg: dict, data: list[ProviderUsage]) -> list[tuple[str, str, list[int]]]:
+    """(provider, account, cutoff choices) of each provider shown, whose cutoff the menu offers."""
+    return [(u.name, u.account, cutoff_choices(cfg, u)) for u in data]
 
 
 def cutoff_menu_label(cfg: dict, name: str, account: str = "") -> str:
@@ -1782,12 +1797,12 @@ class Widget:
             menu.add_separator()
         menu.add_command(label="Refresh now", command=self.refresh)
         menu.add_checkbutton(label="Always on top", variable=self.topmost_var, command=self._toggle_topmost)
-        for name, account in cutoff_menu_providers(self.data):
+        for name, account, choices in cutoff_menu_providers(self.cfg, self.data):
             cutoff = cutoff_for(self.cfg, name, account)
             var = tk.IntVar(value=int(cutoff) if cutoff is not None else 0)
             self.cutoff_vars.append(var)  # Tk forgets variables Python no longer references
             sub = tk.Menu(menu, tearoff=0)
-            for value in (0, *CUTOFF_CHOICES):
+            for value in choices:
                 sub.add_radiobutton(label=f"{value}%" if value else "Off", variable=var, value=value,
                                     command=lambda n=name, a=account, v=value: self._set_cutoff(n, a, v))
             menu.add_cascade(label=cutoff_menu_label(self.cfg, name, account), menu=sub)
@@ -2114,10 +2129,10 @@ class Tray:
             item.connect("activate", lambda _w, u=url: Gtk.show_uri_on_window(None, u, Gtk.get_current_event_time()))
             menu.append(item)
         cfg = load_config()
-        for name, account in cutoff_menu_providers(self.data):
+        for name, account, choices in cutoff_menu_providers(cfg, self.data):
             cutoff = cutoff_for(cfg, name, account)
             sub = Gtk.Menu()
-            for value in (0, *CUTOFF_CHOICES):
+            for value in choices:
                 choice = Gtk.CheckMenuItem(label=f"{value}%" if value else "Off")
                 choice.set_draw_as_radio(True)
                 choice.set_active(value == (cutoff or 0))
@@ -2588,11 +2603,11 @@ class DesktopTray:
         items.append(item("Refresh now", lambda: self.wake.set()))
         for name, url in usage_pages(self.data).items():
             items.append(item(f"Open {name} usage page", (lambda u: lambda: webbrowser.open(u))(url)))
-        for name, account in cutoff_menu_providers(self.data):
+        for name, account, choices in cutoff_menu_providers(self.cfg, self.data):
             items.append(item(cutoff_menu_label(self.cfg, name, account), self.pystray.Menu(*(
                 item(f"{value}%" if value else "Off", self._cutoff_action(name, account, value),
                      checked=self._cutoff_checked(name, account, value), radio=True)
-                for value in (0, *CUTOFF_CHOICES)))))
+                for value in choices))))
         if self.strip:
             items.append(item("Show usage on the taskbar", lambda: self._toggle_taskbar_text(),
                               checked=lambda _i: self.cfg.get("taskbar_text", True)))

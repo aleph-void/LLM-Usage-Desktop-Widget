@@ -21,7 +21,7 @@ UTC = timezone.utc
 # -- Limit.level ---------------------------------------------------------------
 
 @pytest.mark.parametrize("percent, expected", [
-    (0, "normal"), (74.9, "normal"), (75, "warning"), (89.9, "warning"), (90, "critical"), (150, "critical"),
+    (0, "normal"), (69.9, "normal"), (70, "warning"), (89.9, "warning"), (90, "critical"), (150, "critical"),
     (None, "normal"),
 ])
 def test_level_from_percent(percent, expected):

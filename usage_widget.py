@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 APP_NAME = "llm-usage-widget"
 USER_AGENT = f"llm-usage-widget/{__version__}"
@@ -70,7 +70,7 @@ class Limit:
             return "normal"
         if self.percent >= 90:
             return "critical"
-        if self.percent >= 75:
+        if self.percent >= 70:
             return "warning"
         return "normal"
 
@@ -1684,7 +1684,8 @@ THEME = {
     "fg": "#e8e8ea",
     "muted": "#9a9ca5",
     "track": "#3a3c44",
-    "normal": "#4fa3ff",
+    "normal": "#4caf50",
+    "link": "#4fa3ff",
     "warning": "#f0b429",
     "critical": "#ef5350",
     "error": "#ff8a80",
@@ -1740,7 +1741,7 @@ class Widget:
             b.pack(side="right", padx=(6, 0))
             b.bind("<Button-1>", lambda e, c=cmd: c())
         # Shown next to the status while a newer release is out.
-        self.update_link = tk.Label(self.header, text="", bg=THEME["bg"], fg=THEME["normal"], font=self.f_small,
+        self.update_link = tk.Label(self.header, text="", bg=THEME["bg"], fg=THEME["link"], font=self.f_small,
                                     cursor="hand2")
         self.update_link.bind("<Button-1>", lambda e: self._open_update())
 
@@ -2233,9 +2234,7 @@ def gauge_image(data: list[ProviderUsage], size: int = 64):
         top = top_limit(by_name[name]) if name in by_name else None
         if top and top.percent > 0:
             height = (size - 2 * gap) * min(100, top.percent) / 100
-            level = top.level()
-            color = THEME.get(name.lower(), THEME["normal"]) if level == "normal" else THEME[level]
-            draw.rectangle((x0, size - gap - height, x1, size - gap), fill=color)
+            draw.rectangle((x0, size - gap - height, x1, size - gap), fill=THEME[top.level()])
     return img
 
 

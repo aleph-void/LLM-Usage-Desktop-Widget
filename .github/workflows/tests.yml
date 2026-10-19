@@ -48,6 +48,8 @@ jobs:
           - runner: ubuntu-24.04
             python: '3.9'
     runs-on: ${{ matrix.runner }}
+    # The suite takes about a minute; don't let a hang hold a runner for the 6-hour default.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -72,6 +74,7 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-26.04]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - run: packaging/linux/build-deb.sh
@@ -79,7 +82,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ./dist/*.deb \
-            python3-tk python3-boto3 python3-pil python3-pytest xvfb
+            python3-tk python3-boto3 python3-pil python3-pytest python3-pytest-timeout xvfb
       - name: Check the installed copy
         run: |
           cmp usage_widget.py /usr/lib/llm-usage-widget/usage_widget.py

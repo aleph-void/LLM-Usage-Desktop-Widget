@@ -4,6 +4,10 @@
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
+# A hung test (e.g. Tk waiting on the window server) fails with a stack dump instead of stalling CI.
+# The thread method still fires when the hang is inside C code, where a signal would not.
+timeout = 120
+timeout_method = "thread"
 
 [tool.coverage.run]
 source = ["usage_widget"]

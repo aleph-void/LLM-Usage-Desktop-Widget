@@ -320,7 +320,22 @@ cached like Bedrock's: Cost Management is free but throttled, and only updates a
 
 ## Adding a provider
 
-Write a `fetch_<name>()` that returns a `ProviderUsage` and add it to `PROVIDERS`.
+Write a `fetch_<name>()` that returns a `ProviderUsage` and add it to `PROVIDERS`, then add tests for
+it under `tests/` (see `tests/test_codex.py` for the pattern: canned responses, no network).
+
+## Running the tests
+
+```sh
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest                  # Linux without a display: xvfb-run -a python3 -m pytest
+python3 -m pytest --cov            # with a coverage report
+```
+
+The tests never touch the network or your real logins: each one runs against an empty temporary home
+directory, and the provider APIs, AWS, Google Cloud, Azure, GTK/AppIndicator, pystray and Win32 are
+faked. The Tk tests are skipped when there is no display. GitHub Actions runs the suite on every pull request and push to `main`
+(`.github/workflows/tests.yml`) on Linux, macOS and Windows with Python 3.9 to 3.14, plus Ruff and
+ShellCheck, and installs the `.deb` on Ubuntu to run the tests on the system Python.
 
 ## License
 

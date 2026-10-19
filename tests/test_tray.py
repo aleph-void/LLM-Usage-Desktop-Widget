@@ -1,0 +1,487 @@
+"""Tray front ends with their toolkits faked: Linux AppIndicator, pystray (macOS / Windows) and the tray icon."""
+
+from __future__ import annotations
+
+import sys
+import types
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+import usage_widget as w
+
+
+@pytest.fixture
+def sync_threads(monkeypatch):
+    """Run background threads inline so a refresh completes before the test looks."""
+
+    class InlineThread:
+        def __init__(self, target, args=(), daemon=None):
+            self.target, self.args = target, args
+
+        def start(self):
+            self.target(*self.args)
+
+    fake = types.SimpleNamespace(Thread=InlineThread, Event=w.threading.Event)
+    monkeypatch.setattr(w, "threading", fake)
+
+
+def sample_data():
+    soon = datetime.now(timezone.utc) + timedelta(hours=3)
+    return [
+        w.ProviderUsage("Claude", plan="max", fetched_at=1.0,
+                        limits=[w.Limit("Session (5h)", 92, soon), w.Limit("Weekly", 40)]),
+        w.ProviderUsage("Codex", plan="plus", fetched_at=1.0, limits=[w.Limit("5h", 80)]),
+        w.ProviderUsage("Bedrock", summary="$5.00", fetched_at=1.0,
+                        limits=[w.Limit("This month $5.00", None, soon)]),
+    ]
+
+
+# ==============================================================================
+# Linux: AppIndicator via PyGObject
+# ==============================================================================
+
+class FakeMenuItem:
+    def __init__(self, label=None):
+        self.label = label
+        self.sensitive = True
+        self.handlers = {}
+        self.submenu = None
+
+    def set_sensitive(self, value):
+        self.sensitive = value
+
+    def connect(self, signal, callback):
+        self.handlers[signal] = callback
+
+    def set_submenu(self, menu):
+        self.submenu = menu
+
+
+class FakeSeparator(FakeMenuItem):
+    pass
+
+
+class FakeMenu:
+    def __init__(self):
+        self.items = []
+        self.shown = False
+
+    def append(self, item):
+        self.items.append(item)
+
+    def show_all(self):
+        self.shown = True
+
+    def labels(self):
+        return [None if isinstance(i, FakeSeparator) else i.label for i in self.items]
+
+    def item(self, label):
+        return next(i for i in self.items if i.label == label)
+
+
+class FakeIndicator:
+    def __init__(self, *args):
+        self.args = args
+        self.label = None
+        self.icon = None
+        self.menu = None
+        self.theme_path = None
+
+    def set_icon_theme_path(self, path):
+        self.theme_path = path
+
+    def set_status(self, status):
+        self.status = status
+
+    def set_title(self, title):
+        self.title = title
+
+    def set_label(self, text, guide):
+        self.label = text
+
+    def set_icon_full(self, name, desc):
+        self.icon = name
+
+    def set_menu(self, menu):
+        self.menu = menu
+
+
+@pytest.fixture
+def gtk(monkeypatch):
+    opened, timers, idle = [], [], []
+    Gtk = types.SimpleNamespace(
+        Menu=FakeMenu, MenuItem=FakeMenuItem, SeparatorMenuItem=FakeSeparator,
+        show_uri_on_window=lambda win, uri, t: opened.append(uri), get_current_event_time=lambda: 0,
+        main_quit=lambda: opened.append("quit"), main=lambda: None,
+    )
+    GLib = types.SimpleNamespace(timeout_add_seconds=lambda s, fn: timers.append((s, fn)),
+                                 idle_add=lambda fn, *a: idle.append((fn, a)))
+    AI = types.SimpleNamespace(
+        Indicator=types.SimpleNamespace(new=FakeIndicator),
+        IndicatorCategory=types.SimpleNamespace(APPLICATION_STATUS="app-status"),
+        IndicatorStatus=types.SimpleNamespace(ACTIVE="active"),
+    )
+    repo = types.ModuleType("gi.repository")
+    repo.Gtk, repo.GLib = Gtk, GLib
+    gi = types.ModuleType("gi")
+    gi.repository = repo
+    gi.require_version = lambda name, version: None
+    monkeypatch.setitem(sys.modules, "gi", gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", repo)
+    return types.SimpleNamespace(Gtk=Gtk, GLib=GLib, AI=AI, opened=opened, timers=timers, idle=idle, gi=gi,
+                                 repo=repo)
+
+
+def run_idle(gtk):
+    while gtk.idle:
+        fn, args = gtk.idle.pop(0)
+        fn(*args)
+
+
+@pytest.fixture
+def linux_tray(gtk, sync_threads, monkeypatch):
+    data = sample_data()
+    monkeypatch.setattr(w, "fetch_all", lambda: [w.ProviderUsage(u.name, u.plan, list(u.limits), u.error,
+                                                                 u.fetched_at, u.summary) for u in data])
+    tray = w.Tray(5, gtk.AI)
+    return tray
+
+
+def test_tray_startup(gtk, sync_threads, monkeypatch):
+    monkeypatch.setattr(w, "fetch_all", lambda: [])
+    tray = w.Tray(5, gtk.AI)
+    assert tray.interval == w.MIN_INTERVAL
+    assert tray.ind.args == (w.APP_NAME, "llm-usage-normal", "app-status")
+    assert tray.ind.theme_path == str(w.config_dir() / "icons")
+    for level in w.ICON_COLORS:
+        svg = (w.config_dir() / "icons" / f"llm-usage-{level}.svg").read_text()
+        assert svg.startswith("<svg") and "{c1}" not in svg
+    assert tray.ind.menu.labels()[0] == "Loading…"
+    assert gtk.timers and gtk.timers[0][0] == 30
+    assert tray.fetching  # the first refresh waits on the main loop
+
+
+def test_tray_render_after_fetch(linux_tray, gtk):
+    run_idle(gtk)
+    tray = linux_tray
+    assert not tray.fetching
+    assert tray.ind.label == "Claude 92%  Codex 80%  Bedrock $5.00"
+    assert tray.ind.icon == "llm-usage-critical"
+    labels = tray.ind.menu.labels()
+    assert labels[0] == "Claude  (Max)"
+    assert "    Session (5h):  92%  ●" in labels
+    assert any(lab.startswith("    █████████░  resets in 2h 59m") for lab in labels if lab)
+    assert "Codex  (Plus)" in labels
+    assert "    5h:  80%  ▲" in labels
+    assert any(lab.startswith("    This month $5.00  ·  resets in") for lab in labels if lab)
+    assert {"Refresh now", "Open Claude usage page", "Open Codex usage page", "Open Bedrock usage page", "About",
+            "Quit"} <= set(labels)
+    assert tray.ind.menu.shown
+
+
+def test_tray_menu_actions(linux_tray, gtk):
+    run_idle(gtk)
+    menu = linux_tray.ind.menu
+    menu.item("Open Codex usage page").handlers["activate"](None)
+    about = menu.item("About").submenu
+    assert about.items[0].label == f"LLM Usage Widget — Version {w.__version__}"
+    assert not about.items[0].sensitive
+    about.items[1].handlers["activate"](None)
+    menu.item("Quit").handlers["activate"](None)
+    assert gtk.opened == [w.USAGE_PAGES["Codex"], w.REPO_URL, "quit"]
+
+
+def test_tray_icon_levels(linux_tray, gtk):
+    run_idle(gtk)
+    tray = linux_tray
+    tray.data = [w.ProviderUsage("Codex", limits=[w.Limit("5h", 76)])]
+    tray.render()
+    assert tray.ind.icon == "llm-usage-warning"
+    tray.data = [w.ProviderUsage("Codex", limits=[w.Limit("5h", 10)])]
+    tray.render()
+    assert tray.ind.icon == "llm-usage-normal"
+    tray.data = [w.ProviderUsage("Claude", error="HTTP 500"), w.ProviderUsage("Codex", error="nope")]
+    tray.render()
+    assert tray.ind.icon == "llm-usage-error"
+    assert tray.ind.label == "Claude –  Codex –"
+
+
+def test_tray_keeps_stale_numbers(linux_tray, gtk):
+    run_idle(gtk)
+    tray = linux_tray
+    tray._apply([w.ProviderUsage("Claude", error="network: down"), w.ProviderUsage("Codex", error="HTTP 401")])
+    claude, codex = tray.data
+    assert [lim.label for lim in claude.limits] == ["Session (5h)", "Weekly"]
+    assert claude.plan == "max"
+    assert "⚠ stale — network: down" in tray.ind.menu.labels()
+    assert tray.ind.label.startswith("Claude 92%")
+
+
+def test_tray_tick(linux_tray, gtk, monkeypatch):
+    run_idle(gtk)
+    tray = linux_tray
+    renders = []
+    monkeypatch.setattr(tray, "render", lambda: renders.append(1))
+    assert tray._tick() is True
+    assert renders == [1] and not gtk.idle  # too soon: just redraw countdowns
+    tray.last_fetch -= tray.interval
+    assert tray._tick() is True
+    assert gtk.idle  # refreshed
+    tray.fetching = True
+    tray.last_fetch = 0
+    tray.refresh()  # ignored while a fetch is running
+    assert len(gtk.idle) == 1
+
+
+def test_load_appindicator_prefers_ayatana(gtk):
+    gtk.repo.AyatanaAppIndicator3 = "ayatana"
+    gtk.repo.AppIndicator3 = "classic"
+    assert w.load_appindicator() == "ayatana"
+
+
+def test_load_appindicator_classic(gtk):
+    def require(name, version):
+        if name == "AyatanaAppIndicator3":
+            raise ValueError("Namespace not available")
+
+    gtk.gi.require_version = require
+    gtk.repo.AppIndicator3 = "classic"
+    assert w.load_appindicator() == "classic"
+
+
+def test_load_appindicator_missing_typelibs(gtk):
+    def require(name, version):
+        if name != "Gtk":
+            raise ValueError("Namespace not available")
+
+    gtk.gi.require_version = require
+    assert w.load_appindicator() is None
+
+
+def test_load_appindicator_without_gtk(gtk):
+    gtk.gi.require_version = lambda name, version: (_ for _ in ()).throw(ValueError("no Gtk"))
+    assert w.load_appindicator() is None
+
+
+def test_load_appindicator_without_pygobject(monkeypatch):
+    monkeypatch.setitem(sys.modules, "gi", None)
+    assert w.load_appindicator() is None
+
+
+# ==============================================================================
+# macOS / Windows: pystray
+# ==============================================================================
+
+class FakeItem:
+    def __init__(self, text, action, enabled=True, checked=None):
+        self.text, self.action, self.enabled, self.checked = text, action, enabled, checked
+
+
+class FakePystrayMenu:
+    SEPARATOR = "---"
+
+    def __init__(self, *items):
+        self.items = list(items)
+
+    def texts(self):
+        return [i if i == self.SEPARATOR else i.text for i in self.items]
+
+    def item(self, text):
+        return next(i for i in self.items if i != self.SEPARATOR and i.text == text)
+
+
+class FakeIcon:
+    default_handlers: dict = {}
+
+    def __init__(self, name, icon, title, menu):
+        self.name, self.icon, self.title, self.menu = name, icon, title, menu
+        self.stopped = False
+        self._message_handlers = dict(self.default_handlers)
+
+    def stop(self):
+        self.stopped = True
+
+
+@pytest.fixture
+def pystray(monkeypatch):
+    mod = types.ModuleType("pystray")
+    mod.Icon, mod.Menu, mod.MenuItem = FakeIcon, FakePystrayMenu, FakeItem
+    monkeypatch.setitem(sys.modules, "pystray", mod)
+    return mod
+
+
+@pytest.fixture
+def desktop(pystray, monkeypatch):
+    pytest.importorskip("PIL")
+    monkeypatch.setattr(sys, "platform", "linux")  # neither the Windows nor the macOS extras
+    return w.DesktopTray(10)
+
+
+def test_desktop_tray_startup(desktop):
+    assert desktop.interval == w.MIN_INTERVAL
+    assert desktop.icon.name == w.APP_NAME
+    assert desktop.icon.icon.size == (64, 64)
+    assert desktop.icon.menu.texts()[0] == "Loading…"
+    assert desktop.strip is None
+
+
+def test_desktop_tray_render(desktop, monkeypatch):
+    opened = []
+    monkeypatch.setattr(w.webbrowser, "open", opened.append)
+    desktop.last_fetch = 1.0
+    desktop._apply(sample_data())
+    assert desktop.icon.title == "Claude 92%  Codex 80%  Bedrock $5.00"
+    texts = desktop.icon.menu.texts()
+    assert texts[0] == "Claude  (Max)"
+    assert texts[1].startswith("    Session (5h):  92%  ●   ·  resets in ")
+    assert texts[2] == "    Weekly:  40%"
+    assert texts[3] == "---"
+    assert "    5h:  80%  ▲" in texts
+    assert any(t.startswith("    This month $5.00   ·  resets in") for t in texts if t != "---")
+    assert any(t.startswith("Updated ") for t in texts if t != "---")
+    assert "Show usage on the taskbar" not in texts  # Windows only
+    desktop.icon.menu.item("Open Claude usage page").action()
+    desktop.icon.menu.item("Open Codex usage page").action()
+    about = desktop.icon.menu.item("About").action
+    about.item(f"Aleph Void LLC: {w.LLC_URL}").action()
+    assert opened == [w.USAGE_PAGES["Claude"], w.USAGE_PAGES["Codex"], w.LLC_URL]
+
+
+def test_desktop_tray_errors_and_stale(desktop):
+    desktop._apply(sample_data())
+    desktop._apply([w.ProviderUsage("Claude", error="network: down"), w.ProviderUsage("Codex", error="HTTP 401")])
+    texts = desktop.icon.menu.texts()
+    assert "⚠ stale — network: down" in texts
+    assert "⚠ stale — HTTP 401" in texts
+    desktop.data = []
+    desktop._apply([w.ProviderUsage("Claude", error="not logged in")])
+    assert "⚠ not logged in" in desktop.icon.menu.texts()
+    assert desktop.icon.title == "Claude –"
+
+
+def test_desktop_tray_refresh_and_quit(desktop):
+    desktop.icon.menu.item("Refresh now").action()
+    assert desktop.wake.is_set()
+    desktop.icon.menu.item("Quit").action()
+    assert desktop.icon.stopped
+
+
+def test_desktop_tray_loop_iteration(desktop, monkeypatch):
+    class Stop(Exception):
+        pass
+
+    monkeypatch.setattr(w, "fetch_all", lambda: sample_data())
+    monkeypatch.setattr(desktop.wake, "wait", lambda timeout: (_ for _ in ()).throw(Stop))
+    icon = types.SimpleNamespace(visible=False)
+    with pytest.raises(Stop):
+        desktop._loop(icon)
+    assert icon.visible
+    assert desktop.last_fetch > 0
+    assert desktop.icon.title.startswith("Claude 92%")
+
+
+def test_desktop_tray_toggle_taskbar_text_keeps_other_settings(desktop):
+    w.save_config({"bedrock": {"budget": "b"}})
+    desktop._toggle_taskbar_text()
+    assert w.load_config() == {"bedrock": {"budget": "b"}, "taskbar_text": False}
+    desktop._toggle_taskbar_text()
+    assert w.load_config()["taskbar_text"] is True
+
+
+def test_desktop_tray_windows_menu_on_any_click(pystray, monkeypatch):
+    pytest.importorskip("PIL")
+    posted = []
+    win32 = types.SimpleNamespace(WM_NOTIFY=0x4E, WM_LBUTTONUP=0x202, WM_RBUTTONUP=0x205,
+                                  PostMessage=lambda *a: posted.append(a))
+    util = types.ModuleType("pystray._util")
+    util.win32 = win32
+    monkeypatch.setitem(sys.modules, "pystray._util", util)
+    monkeypatch.setattr(sys, "platform", "win32")
+    seen = []
+    monkeypatch.setattr(FakeIcon, "default_handlers", {0x4E: lambda wp, lp: seen.append(lp) or "handled"})
+
+    class FakeStrip:
+        def __init__(self, tray):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(w, "TaskbarStrip", FakeStrip)
+    tray = w.DesktopTray(60)
+    assert tray.strip is not None
+    tray.data = sample_data()
+    handler = tray.icon._message_handlers[0x4E]
+    assert handler(0, 0x202) == "handled"
+    assert seen == [0x205]  # a left click opens the menu like a right click
+    assert tray.icon.menu.texts()[0] == "Claude  (Max)"  # rebuilt on open
+    assert handler(0, 0x200) == "handled"
+    assert seen[-1] == 0x200  # other messages pass through
+    tray.icon._hwnd = 99
+    tray.open_menu()
+    assert posted == [(99, 0x4E, 0, 0x202)]
+    texts = tray._menu().texts()
+    assert "Show usage on the taskbar" in texts
+    tray._quit()
+    assert tray.strip.closed and not tray.icon.stopped  # the strip's loop stops the icon
+
+
+def test_desktop_tray_survives_missing_tkinter(pystray, monkeypatch):
+    pytest.importorskip("PIL")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(w.DesktopTray, "_open_menu_on_any_click", lambda self: None)
+    warnings = []
+    monkeypatch.setattr(w, "warn", warnings.append)
+
+    def no_tk(tray):
+        raise ImportError("No module named 'tkinter'")
+
+    monkeypatch.setattr(w, "TaskbarStrip", no_tk)
+    tray = w.DesktopTray(60)
+    assert tray.strip is None
+    assert "Taskbar text unavailable" in warnings[0]
+
+
+# ==============================================================================
+# The tray icon image
+# ==============================================================================
+
+def rgb(color: str):
+    return tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def test_gauge_image_empty():
+    pytest.importorskip("PIL")
+    img = w.gauge_image([])
+    assert img.mode == "RGBA" and img.size == (64, 64)
+    assert img.getpixel((0, 0))[3] == 0  # transparent corner
+    # Two tracks (Claude, Codex) with nothing filled.
+    assert img.getpixel((16, 32))[:3] == rgb(w.THEME["track"])
+    assert img.getpixel((48, 32))[:3] == rgb(w.THEME["track"])
+
+
+def test_gauge_image_fill_and_colors():
+    pytest.importorskip("PIL")
+    data = [
+        w.ProviderUsage("Claude", limits=[w.Limit("s", 50)]),
+        w.ProviderUsage("Codex", limits=[w.Limit("s", 95)]),
+        w.ProviderUsage("Bedrock", summary="$1", limits=[w.Limit("spend", None)]),
+    ]
+    img = w.gauge_image(data, size=100)
+    gap = 10
+    width = (100 - gap * 4) // 3
+    centers = [gap + i * (width + gap) + width // 2 for i in range(3)]
+    # Claude: half full, in its own color below the middle, track above.
+    assert img.getpixel((centers[0], 80))[:3] == rgb(w.THEME["claude"])
+    assert img.getpixel((centers[0], 20))[:3] == rgb(w.THEME["track"])
+    # Codex: critical, nearly full.
+    assert img.getpixel((centers[1], 20))[:3] == rgb(w.THEME["critical"])
+    # Bedrock: no percentage, so an empty track.
+    assert img.getpixel((centers[2], 80))[:3] == rgb(w.THEME["track"])
+
+
+def test_gauge_image_caps_overfull():
+    pytest.importorskip("PIL")
+    img = w.gauge_image([w.ProviderUsage("Claude", limits=[w.Limit("s", 250)])], size=40)
+    assert img.getpixel((0, 0))[3] == 0  # nothing drawn outside the gauge

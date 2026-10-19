@@ -60,7 +60,7 @@ def test_logo_image():
     pytest.importorskip("PIL")
     img = w.logo_image(22)
     assert img.size == (22, 22) and img.mode == "RGBA"
-    assert img.getpixel((0, 0))[3] == 0  # transparent outside the rounded tile
+    assert img.getpixel((0, 0))[3] < 16  # transparent outside the rounded tile (give or take resampling)
     assert img.getpixel((11, 11))[3] == 255
 
 

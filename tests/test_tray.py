@@ -225,6 +225,43 @@ def test_tray_cutoff_menu(linux_tray, gtk):
     assert "Stop Claude at: 80%" in linux_tray.ind.menu.labels()
 
 
+@pytest.fixture
+def notify_send(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(w.shutil, "which", lambda name, **kw: f"/usr/bin/{name}")
+    monkeypatch.setattr(w.subprocess, "run", lambda args, **kw: calls.append(args))
+    return calls
+
+
+def test_tray_update_available(notify_send, newer_release, linux_tray, gtk, fake_http):
+    run_idle(gtk)
+    tray = linux_tray
+    assert [args[0] for args in notify_send] == ["notify-send"]
+    labels = tray.ind.menu.labels()
+    assert labels[:3] == ["Update available: v99.0.0", None, "Claude  (Max)"]
+    assert tray.ind.title == "LLM Usage — Update available: v99.0.0"
+    tray.ind.menu.item("Update available: v99.0.0").handlers["activate"](None)
+    assert gtk.opened == [newer_release["url"]]
+    tray.refresh()
+    run_idle(gtk)
+    assert len(fake_http.urls(w.RELEASES_API)) == 1  # the answer is cached, not fetched on every refresh
+    assert len(notify_send) == 1  # and announced once
+    assert tray.ind.menu.labels()[0] == "Update available: v99.0.0"
+    tray._apply(sample_data())  # no newer release (any more)
+    assert "Update available: v99.0.0" not in tray.ind.menu.labels()
+    assert tray.ind.title == "LLM Usage"
+
+
+def test_tray_update_check_disabled(newer_release, gtk, sync_threads, fake_http, monkeypatch):
+    w.save_config({"update_check": False})
+    monkeypatch.setattr(w, "fetch_all", sample_data)
+    tray = w.Tray(60, gtk.AI)
+    run_idle(gtk)
+    assert tray.ind.menu.labels()[0] == "Claude  (Max)"
+    assert fake_http.calls == []
+
+
 def test_tray_icon_levels(linux_tray, gtk):
     run_idle(gtk)
     tray = linux_tray
@@ -427,6 +464,44 @@ def test_desktop_tray_loop_iteration(desktop, monkeypatch):
     assert icon.visible
     assert desktop.last_fetch > 0
     assert desktop.icon.title.startswith("Claude 92%")
+
+
+def test_desktop_tray_update_available(newer_release, desktop, monkeypatch):
+    class Stop(Exception):
+        pass
+
+    opened = []
+    monkeypatch.setattr(w.webbrowser, "open", opened.append)
+    monkeypatch.setattr(w, "fetch_all", lambda: sample_data())
+    monkeypatch.setattr(desktop.wake, "wait", lambda timeout: (_ for _ in ()).throw(Stop))
+    with pytest.raises(Stop):
+        desktop._loop(types.SimpleNamespace(visible=False))  # one fetch, with the update check
+    texts = desktop.icon.menu.texts()
+    assert texts[:3] == ["Update available: v99.0.0", "---", "Claude  (Max)"]
+    assert desktop.icon.title == "Claude 92%  Codex 80%  Bedrock $5.00\nUpdate available: v99.0.0"
+    desktop.icon.menu.item("Update available: v99.0.0").action()
+    assert opened == [newer_release["url"]]
+    desktop._apply(sample_data())  # no newer release (any more)
+    assert "Update available: v99.0.0" not in desktop.icon.menu.texts()
+    assert desktop.icon.title == "Claude 92%  Codex 80%  Bedrock $5.00"
+
+
+def test_desktop_tray_update_notification_on_windows(newer_release, desktop, monkeypatch):
+    class Stop(Exception):
+        pass
+
+    shown = []
+    desktop.icon.HAS_NOTIFICATION = True
+    desktop.icon.notify = lambda message, title: shown.append((title, message))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(w, "fetch_all", lambda: sample_data())
+    monkeypatch.setattr(desktop.wake, "wait", lambda timeout: (_ for _ in ()).throw(Stop))
+    for _ in range(2):
+        desktop.wake.set()  # a second fetch: the notification is not repeated
+        with pytest.raises(Stop):
+            desktop._loop(types.SimpleNamespace(visible=False))
+    assert shown == [("LLM Usage Widget", "Version 99.0.0 is available. Open the menu to get it.")]
+    assert desktop._menu().texts()[0] == "Update available: v99.0.0"  # the menu built when it is opened
 
 
 def test_desktop_tray_toggle_taskbar_text_keeps_other_settings(desktop):

@@ -48,6 +48,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(w, "_SSL_CONTEXT", None)
     monkeypatch.setattr(w, "_TOKENS", {})
+    monkeypatch.setattr(w, "_update_failed_at", 0.0)
     # No real gcloud / az, and no google-auth or azure-identity picking up real credentials.
     monkeypatch.setattr(w, "run_cli", lambda args, timeout=30: None)
     for mod in ("google.auth", "google.auth.transport.requests", "azure.identity"):
@@ -123,4 +124,14 @@ def frozen_now(monkeypatch):
         return when
 
     return freeze
+
+
+@pytest.fixture
+def newer_release(fake_http):
+    """GitHub's latest release is v99.0.0, newer than this copy. Request it before a UI fixture:
+    the UIs check for an update in their first refresh, while they are being built."""
+    url = f"{w.REPO_URL}/releases/tag/v99.0.0"
+    fake_http.responses[w.RELEASES_API] = {"tag_name": "v99.0.0", "html_url": url, "draft": False,
+                                           "prerelease": False}
+    return {"version": "99.0.0", "url": url}
 

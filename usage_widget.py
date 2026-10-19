@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-__version__ = "0.0.6"
+__version__ = "0.0.7"
 
 APP_NAME = "llm-usage-widget"
 USER_AGENT = f"llm-usage-widget/{__version__}"
@@ -1534,6 +1534,113 @@ def enforce_cutoffs(results: list[ProviderUsage]) -> None:
 
 
 # --------------------------------------------------------------------------
+# Update check
+# --------------------------------------------------------------------------
+#
+# At most once a day the widget asks GitHub for the latest release and, if it is
+# newer than this copy, offers it at the top of the menu. The answer is cached in
+# cloud-cache.json, so restarts don't ask again. "update_check": false in
+# config.json turns it off.
+
+RELEASES_API = "https://api.github.com/repos/aleph-void/LLM-Usage-Desktop-Widget/releases/latest"
+UPDATE_INTERVAL = 86400
+UPDATE_RETRY = 3600  # after a failed check (offline, rate-limited), wait this long before trying again
+VERSION_RE = re.compile(r"v?(\d+(?:\.\d+)*)")
+_update_failed_at = 0.0
+
+
+def parse_version(text) -> tuple[int, ...] | None:
+    """(1, 2, 3) for "v1.2.3" or "1.2.3"; None for anything else, including "1.2.3-rc1"."""
+    m = VERSION_RE.fullmatch(str(text or "").strip())
+    return tuple(int(p) for p in m.group(1).split(".")) if m else None
+
+
+def is_newer(version, than: str | None = None) -> bool:
+    """Whether `version` is a later release than `than` (this copy by default), compared numerically."""
+    new, old = parse_version(version), parse_version(__version__ if than is None else than)
+    if new is None or old is None:
+        return False
+    width = max(len(new), len(old))
+    return new + (0,) * (width - len(new)) > old + (0,) * (width - len(old))
+
+
+def _latest_release() -> dict | None:
+    """The newest published release as {"version", "url"}, or None if GitHub has none we can offer."""
+    data = http_json(RELEASES_API, {"Accept": "application/vnd.github+json"}, timeout=10)
+    if not isinstance(data, dict) or data.get("draft") or data.get("prerelease"):
+        return None
+    tag = str(data.get("tag_name") or "").strip()
+    if parse_version(tag) is None:
+        return None
+    # Only ever open a page of this repo's releases, whatever the reply says.
+    url = str(data.get("html_url") or "")
+    if not url.startswith(REPO_URL + "/releases/"):
+        url = f"{REPO_URL}/releases/tag/{urllib.parse.quote(tag)}"
+    return {"version": tag.lstrip("v"), "url": url}
+
+
+def check_for_update() -> dict | None:
+    """The release to offer ({"version", "url"}) when one newer than this copy is out, else None.
+
+    Never raises: a failed check must not break the widget. May block on the network, so
+    call it from a worker thread.
+    """
+    global _update_failed_at
+    if not _truthy(load_config().get("update_check", True)):
+        return None
+    if 0 <= time.time() - _update_failed_at < UPDATE_RETRY:
+        return None
+    try:
+        latest = _cached("update:latest", UPDATE_INTERVAL, _latest_release)
+    except Exception:  # offline, rate-limited, a reply that isn't JSON...
+        _update_failed_at = time.time()
+        return None
+    if isinstance(latest, dict) and latest.get("url") and is_newer(latest.get("version")):
+        return latest
+    return None
+
+
+def update_label(update: dict) -> str:
+    return f"Update available: v{update['version']}"
+
+
+def notify_update(update: dict | None, notify=None) -> None:
+    """Announce a newer release with a desktop notification, once per version.
+
+    `notify(message, title)` is the tray icon's own notifier (pystray's balloon on Windows);
+    otherwise macOS uses Notification Center and Linux notify-send. Call it off the UI thread.
+    """
+    if not update:
+        return
+    path = config_dir() / "update-notified"  # local, not config.json: no need to sync it
+    try:
+        if path.read_text(encoding="utf-8").strip() == update["version"]:
+            return
+    except OSError:
+        pass
+    title = "LLM Usage Widget"
+    message = f"Version {update['version']} is available. Open the menu to get it."
+    try:
+        if notify:
+            notify(message, title)
+        elif sys.platform == "darwin":
+            # Text passed as arguments, so nothing in it is parsed as AppleScript.
+            subprocess.run(["osascript", "-e", "on run argv", "-e",
+                            "display notification (item 1 of argv) with title (item 2 of argv)",
+                            "-e", "end run", message, title], capture_output=True, timeout=10)
+        elif sys.platform.startswith("linux") and shutil.which("notify-send"):
+            subprocess.run(["notify-send", "--app-name", title, title, message], capture_output=True, timeout=10)
+        else:
+            return  # nothing to show it with; the menu item and tooltip still say so
+    except Exception:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(update["version"], encoding="utf-8")
+    except OSError:
+        pass
+
+# --------------------------------------------------------------------------
 # Terminal output
 # --------------------------------------------------------------------------
 
@@ -1585,6 +1692,7 @@ class Widget:
         self.interval = max(MIN_INTERVAL, interval)
         self.cfg = self._load_config()
         self.data: list[ProviderUsage] = []
+        self.update: dict | None = None  # a newer release, from check_for_update()
         self.fetching = False
 
         root = self.root = tk.Tk()
@@ -1616,6 +1724,10 @@ class Widget:
             b = tk.Label(self.header, text=text, bg=THEME["bg"], fg=THEME["muted"], font=self.f_label, cursor="hand2")
             b.pack(side="right", padx=(6, 0))
             b.bind("<Button-1>", lambda e, c=cmd: c())
+        # Shown next to the status while a newer release is out.
+        self.update_link = tk.Label(self.header, text="", bg=THEME["bg"], fg=THEME["normal"], font=self.f_small,
+                                    cursor="hand2")
+        self.update_link.bind("<Button-1>", lambda e: self._open_update())
 
         self.body = tk.Frame(root, bg=THEME["bg"])
         self.body.pack(fill="both", padx=10, pady=(0, 10))
@@ -1665,6 +1777,9 @@ class Widget:
         for child in menu.winfo_children():
             child.destroy()
         self.cutoff_vars = []
+        if self.update:
+            menu.add_command(label=update_label(self.update), command=self._open_update)
+            menu.add_separator()
         menu.add_command(label="Refresh now", command=self.refresh)
         menu.add_checkbutton(label="Always on top", variable=self.topmost_var, command=self._toggle_topmost)
         for name, account in cutoff_menu_providers(self.data):
@@ -1698,6 +1813,10 @@ class Widget:
         self.cfg = update_config(topmost=self.topmost_var.get())
         self.root.attributes("-topmost", self.cfg["topmost"])
 
+    def _open_update(self):
+        if self.update:
+            webbrowser.open(self.update["url"])
+
     def quit(self):
         self.root.destroy()
 
@@ -1712,11 +1831,13 @@ class Widget:
         def work():
             results = fetch_all()
             enforce_cutoffs(results)
-            self.root.after(0, lambda: self._apply(results))
+            update = check_for_update()
+            notify_update(update)
+            self.root.after(0, lambda: self._apply(results, update))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _apply(self, results: list[ProviderUsage]):
+    def _apply(self, results: list[ProviderUsage], update: dict | None = None):
         self.fetching = False
         previous = {u.name: u for u in self.data}
         for u in results:
@@ -1725,6 +1846,7 @@ class Widget:
             if u.error and not u.limits and old and old.limits:
                 u.limits, u.plan, u.account = old.limits, old.plan, old.account
         self.data = results
+        self.update = update
         self.cfg = self._load_config()  # a reached cutoff was cleared, or another computer changed a setting
         self.render()
 
@@ -1747,6 +1869,11 @@ class Widget:
 
         last = max((u.fetched_at for u in self.data), default=0)
         self.status.config(text="Updated " + time.strftime("%H:%M", time.localtime(last)) if last else "")
+        if self.update:
+            self.update_link.config(text=f"⬆ v{self.update['version']}")
+            self.update_link.pack(side="left", padx=(8, 0), after=self.status)
+        else:
+            self.update_link.pack_forget()
 
         for i, u in enumerate(self.data):
             panel = tk.Frame(self.body, bg=THEME["panel"], padx=10, pady=8)
@@ -1860,6 +1987,7 @@ class Tray:
         self.GLib, self.Gtk, self.AI = GLib, Gtk, appindicator
         self.interval = max(MIN_INTERVAL, interval)
         self.data: list[ProviderUsage] = []
+        self.update: dict | None = None
         self.fetching = False
         self.last_fetch = 0.0
 
@@ -1889,11 +2017,13 @@ class Tray:
         def work():
             results = fetch_all()
             enforce_cutoffs(results)
-            self.GLib.idle_add(self._apply, results)
+            update = check_for_update()
+            notify_update(update)
+            self.GLib.idle_add(self._apply, results, update)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _apply(self, results: list[ProviderUsage]):
+    def _apply(self, results: list[ProviderUsage], update: dict | None = None):
         self.fetching = False
         self.last_fetch = time.time()
         previous = {u.name: u for u in self.data}
@@ -1902,6 +2032,7 @@ class Tray:
             if u.error and not u.limits and old and old.limits:
                 u.limits, u.plan, u.account = old.limits, old.plan, old.account
         self.data = results
+        self.update = update
         self.render()
         return False
 
@@ -1935,6 +2066,8 @@ class Tray:
             worst = "error"
         self.ind.set_label("  ".join(parts) if parts else "…", "")
         self.ind.set_icon_full(f"llm-usage-{worst}", "LLM usage")
+        # Some top bars show the title as the icon's tooltip.
+        self.ind.set_title("LLM Usage" + (f" — {update_label(self.update)}" if self.update else ""))
 
         menu = Gtk.Menu()
 
@@ -1943,6 +2076,12 @@ class Tray:
             item.set_sensitive(False)
             menu.append(item)
 
+        if self.update:
+            item = Gtk.MenuItem(label=update_label(self.update))
+            item.connect("activate", lambda _w, u=self.update["url"]: Gtk.show_uri_on_window(
+                None, u, Gtk.get_current_event_time()))
+            menu.append(item)
+            menu.append(Gtk.SeparatorMenuItem())
         if not self.data:
             info("Loading…")
         for i, u in enumerate(self.data):
@@ -2352,6 +2491,7 @@ class DesktopTray:
         self.pystray = pystray
         self.interval = max(MIN_INTERVAL, interval)
         self.data: list[ProviderUsage] = []
+        self.update: dict | None = None
         self.last_fetch = 0.0
         self.wake = threading.Event()
         self.cfg = load_config()
@@ -2426,6 +2566,9 @@ class DesktopTray:
         def info(text):
             items.append(item(text, None, enabled=False))
 
+        if self.update:
+            items.append(item(update_label(self.update), (lambda u: lambda: webbrowser.open(u))(self.update["url"])))
+            items.append(sep)
         if not self.data:
             info("Loading…")
         for i, u in enumerate(self.data):
@@ -2464,7 +2607,10 @@ class DesktopTray:
     def _render(self):
         text = summary_text(self.data)
         self.icon.icon = gauge_image(self.data)
-        self.icon.title = text or "LLM Usage"  # tooltip
+        tip = text or "LLM Usage"
+        if self.update:
+            tip += "\n" + update_label(self.update)
+        self.icon.title = tip  # tooltip
         if sys.platform != "win32":  # on Windows the menu is rebuilt when it is opened
             self.icon.menu = self._menu()
         if sys.platform == "darwin":
@@ -2476,13 +2622,14 @@ class DesktopTray:
             except Exception:
                 pass
 
-    def _apply(self, results: list[ProviderUsage]):
+    def _apply(self, results: list[ProviderUsage], update: dict | None = None):
         previous = {u.name: u for u in self.data}
         for u in results:
             old = previous.get(u.name)
             if u.error and not u.limits and old and old.limits:
                 u.limits, u.plan, u.account = old.limits, old.plan, old.account
         self.data = results
+        self.update = update
         self.cfg = load_config()  # a reached cutoff was cleared, or another computer changed a setting
         self._render()
 
@@ -2494,7 +2641,11 @@ class DesktopTray:
                 results = fetch_all()
                 enforce_cutoffs(results)
                 self.last_fetch = time.time()
-                self._on_main(lambda r=results: self._apply(r))
+                update = check_for_update()
+                # pystray can show a notification itself on Windows; elsewhere notify_update has its own way.
+                notify_update(update, self.icon.notify if getattr(self.icon, "HAS_NOTIFICATION", False)
+                              and sys.platform == "win32" else None)
+                self._on_main(lambda r=results, u=update: self._apply(r, u))
             else:
                 self._on_main(self._render)  # keep the "resets in" countdowns current
             self.wake.wait(30)

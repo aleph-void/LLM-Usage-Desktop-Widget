@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import types
 from datetime import datetime, timedelta, timezone
 
@@ -12,13 +14,38 @@ import usage_widget as w
 tk = pytest.importorskip("tkinter")
 
 
+# Builds whose Tk can't start here (headers that don't match the library, Tk 9 on a headless
+# macOS session) raise RuntimeError or crash the interpreter, so try it in a child process first.
+PROBE = "import tkinter\nfor _ in range(3):\n    r = tkinter.Tk(); r.update(); r.destroy()"
+
+
 @pytest.fixture(scope="module")
 def tk_available():
     try:
-        root = tk.Tk()
-    except tk.TclError as e:
-        pytest.skip(f"no display for Tk: {e}")
-    root.destroy()
+        probe = subprocess.run([sys.executable, "-c", PROBE], capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        pytest.skip("Tk hung starting up")
+    if probe.returncode:
+        pytest.skip(f"no usable Tk: {(probe.stderr.strip().splitlines() or [probe.returncode])[-1]}")
+
+
+@pytest.fixture(autouse=True)
+def retry_tk_startup(monkeypatch):
+    """Windows' Tcl now and then fails to source its own init scripts when a Tk follows another one
+    in the same process ("Can't find a usable tk.tcl", "invalid command name tcl_findLibrary")."""
+    if sys.platform != "win32":
+        return
+
+    class Tk(tk.Tk):
+        def __init__(self, *args, **kwargs):
+            for attempt in range(5):
+                try:
+                    return super().__init__(*args, **kwargs)
+                except tk.TclError:
+                    if attempt == 4:
+                        raise
+
+    monkeypatch.setattr(tk, "Tk", Tk)
 
 
 @pytest.fixture

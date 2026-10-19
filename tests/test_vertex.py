@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import types
 import urllib.parse
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -31,8 +33,14 @@ def write_codex_config(home, text):
     path.write_text(text, encoding="utf-8")
 
 
+def adc_path(home):
+    """Where gcloud keeps the ADC file on this platform (APPDATA is under home, see conftest)."""
+    base = Path(os.environ["APPDATA"]) if sys.platform == "win32" else home / ".config"
+    return base / "gcloud" / "application_default_credentials.json"
+
+
 def write_adc(home, data, path=None):
-    path = path or home / ".config" / "gcloud" / "application_default_credentials.json"
+    path = path or adc_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
@@ -128,7 +136,7 @@ def test_adc_explicit_file(home, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("raw", ["{broken", "[]"])
 def test_adc_garbage(home, raw):
-    path = home / ".config" / "gcloud" / "application_default_credentials.json"
+    path = adc_path(home)
     path.parent.mkdir(parents=True)
     path.write_text(raw)
     assert w._gcp_adc() == {}

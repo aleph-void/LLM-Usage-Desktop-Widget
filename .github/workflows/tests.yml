@@ -38,6 +38,13 @@ jobs:
       matrix:
         runner: [ubuntu-26.04, macos-latest, macos-15-intel, windows-latest]
         python: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+        # setup-python has no 3.9 build for Ubuntu 26.04; test it on 24.04 instead.
+        exclude:
+          - runner: ubuntu-26.04
+            python: '3.9'
+        include:
+          - runner: ubuntu-24.04
+            python: '3.9'
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7

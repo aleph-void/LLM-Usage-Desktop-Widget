@@ -288,9 +288,40 @@ def test_update_hidden_when_turned_off():
     assert strip.placed is None
 
 
-def test_update_hidden_when_collapsed():
-    strip = make_strip(root=FakeRoot("normal"), placed=(1, 2, 3, 4))
+def test_update_shows_the_logo_when_collapsed():
+    # Hiding the strip left only the tray icon, often in the overflow, to turn this back off.
+    positions = []
+    strip = make_strip(
+        [w.ProviderUsage("Claude", limits=[w.Limit("s", 50)])],
+        root=FakeRoot(), placed=None, spans=None, spans_at=0.0,
+        inner=types.SimpleNamespace(winfo_reqwidth=lambda: 44),
+        user32=types.SimpleNamespace(SetWindowPos=lambda *a: positions.append(a)),
+    )
     strip.tray.cfg["collapsed"] = True
+    strip._placement = lambda: (1, TASKBAR, 1650)
+    drawn = []
+    strip._draw = lambda *a: pytest.fail("should not draw the numbers")
+    strip._draw_logo = lambda bg, size: drawn.append((bg, size))
+    strip._taskbar_color = lambda x, y: "#202020"
+    strip._update()
+    margin = 48 // 8
+    assert drawn == [("#202020", 48 - 2 * margin)]
+    assert strip.root.state() == "normal"
+    assert strip.root.geometries == [f"44x{48 - 2 * margin}+{1650 - margin - 44}+{1040 + margin}"]
+
+
+def test_update_collapsed_hides_when_taskbar_full():
+    strip = make_strip(root=FakeRoot("normal"), placed=(1, 2, 3, 4), spans=None, spans_at=0.0)
+    strip.tray.cfg["collapsed"] = True
+    strip._placement = lambda: (1, TASKBAR, 1650)
+    strip._free_spans = lambda *a: [(0, 10)]
+    strip._update()
+    assert strip.root.state() == "withdrawn"
+
+
+def test_update_collapsed_hidden_when_turned_off():
+    strip = make_strip(root=FakeRoot("normal"), placed=(1, 2, 3, 4))
+    strip.tray.cfg.update(collapsed=True, taskbar_text=False)
     strip._placement = lambda: pytest.fail("should not look for the taskbar")
     strip._update()
     assert strip.root.state() == "withdrawn"

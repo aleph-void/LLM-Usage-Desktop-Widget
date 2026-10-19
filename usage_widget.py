@@ -2504,6 +2504,28 @@ class TaskbarStrip:
             w.bind("<ButtonRelease-1>", self._click)
             w.bind("<ButtonRelease-3>", self._click)
 
+    def _draw_logo(self, bg: str, size: int):
+        """"Collapse to logo": the logo in place of the numbers, still clickable for the menu."""
+        key = (bg, "logo", size)
+        if key == self.shown_key:
+            return
+        import base64
+        import io
+
+        self.shown_key, self.bg = key, bg
+        png = io.BytesIO()
+        logo_image(size).save(png, format="PNG")
+        self.logo = self.tk.PhotoImage(data=base64.b64encode(png.getvalue()))  # Tk keeps no reference of its own
+        for child in self.inner.winfo_children():
+            child.destroy()
+        self.frame.configure(bg=bg)
+        self.inner.configure(bg=bg)
+        label = self.tk.Label(self.inner, image=self.logo, bg=bg, padx=0, pady=0, bd=0)
+        label.pack(padx=self.pad)
+        for w in (self.frame, self.inner, label):
+            w.bind("<ButtonRelease-1>", self._click)
+            w.bind("<ButtonRelease-3>", self._click)
+
     def _click(self, _e=None):
         self.tray.open_menu()
 
@@ -2524,7 +2546,7 @@ class TaskbarStrip:
 
     def _update(self):
         cfg = self.tray.cfg
-        place = self._placement() if cfg.get("taskbar_text", True) and not cfg.get("collapsed", False) else None
+        place = self._placement() if cfg.get("taskbar_text", True) else None
         if place is None:
             self._hide()
             return
@@ -2534,14 +2556,25 @@ class TaskbarStrip:
         if self.spans is None or now - self.spans_at >= self.LAYOUT_MS / 1000:
             self.spans, self.spans_at = self._free_spans(taskbar, tb, tray_left), now
         margin = (bottom - top) // 8
-        parts = self._parts()
-        choice = self._choose(parts, self.spans, margin)
+        if cfg.get("collapsed", False):
+            # Keep the strip, as the logo: hidden, the tray icon (often in the overflow) would
+            # be the only way back to the menu to turn this off.
+            size = bottom - top - 2 * margin
+            edge = next((b - margin for a, b in self.spans if b - a >= size + 2 * self.pad + 2 * margin), None)
+            choice = None if edge is None else ("logo", edge)
+        else:
+            parts = self._parts()
+            choice = self._choose(parts, self.spans, margin)
         if choice is None:
             self._hide()  # the taskbar is full; the tray icon still has the numbers
             return
         layout, edge = choice
         # The pixel sampled is in the margin right of the strip, never under it or a button.
-        self._draw(self._taskbar_color(edge + margin // 2, top + 2), parts, layout)
+        bg = self._taskbar_color(edge + margin // 2, top + 2)
+        if layout == "logo":
+            self._draw_logo(bg, size)
+        else:
+            self._draw(bg, parts, layout)
         self.root.update_idletasks()
         w = self.inner.winfo_reqwidth()
         geom = (w, bottom - top - 2 * margin, edge - w, top + margin)

@@ -91,8 +91,8 @@ aside for full-screen apps and an auto-hidden or vertical taskbar. Turn it off w
 in the menu. The tray icon may be tucked into the overflow (`^`) menu; drag it onto the taskbar to keep it visible.
 
 To keep the numbers out of sight, choose *Collapse to logo* in the menu: the top bar, menu bar or taskbar then
-shows only the Aleph Void logo (on Windows the taskbar text is hidden and the tray icon becomes the logo). The
-numbers are still in the menu; choose it again to bring them back.
+shows only the Aleph Void logo (on Windows the logo takes the taskbar text's place, and the tray icon becomes the
+logo too; click either to open the menu). The numbers are still in the menu; choose it again to bring them back.
 
 ### Running from source
 

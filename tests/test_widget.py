@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import types
@@ -16,11 +17,15 @@ tk = pytest.importorskip("tkinter")
 
 # Builds whose Tk can't start here (headers that don't match the library, Tk 9 on a headless
 # macOS session) raise RuntimeError or crash the interpreter, so try it in a child process first.
+# On the GitHub macOS runners even a Tk that starts aborts the process now and then mid-test, so
+# there the Tk tests are left to Linux (Xvfb) and Windows.
 PROBE = "import tkinter\nfor _ in range(3):\n    r = tkinter.Tk(); r.update(); r.destroy()"
 
 
 @pytest.fixture(scope="module")
 def tk_available():
+    if sys.platform == "darwin" and os.environ.get("GITHUB_ACTIONS"):
+        pytest.skip("Tk is unreliable on the GitHub macOS runners")
     try:
         probe = subprocess.run([sys.executable, "-c", PROBE], capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:

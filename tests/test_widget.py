@@ -144,17 +144,29 @@ def test_widget_tick(widget, monkeypatch):
     assert calls == ["render", "refresh"]
 
 
-def test_widget_drag_saves_position(widget):
-    widget.root.geometry("+100+120")
-    widget.root.update()
-    x, y = widget.root.winfo_x(), widget.root.winfo_y()
-    widget._drag_start(types.SimpleNamespace(x_root=x + 10, y_root=y + 10))
-    widget._drag_move(types.SimpleNamespace(x_root=x + 60, y_root=y + 40))
-    widget.root.update()
+def test_widget_drag_saves_position(widget, monkeypatch):
+    # Where the window lands is up to the window manager, and moving a mapped window aborts the
+    # interpreter with the Tk in python.org's macOS arm64 3.10 build, so stand in for the move.
+    pos = {"x": 100, "y": 120}
+    moves = []
+
+    def geometry(spec):
+        moves.append(spec)
+        pos["x"], pos["y"] = (int(v) for v in spec.lstrip("+").split("+"))
+
+    monkeypatch.setattr(widget.root, "geometry", geometry)
+    monkeypatch.setattr(widget.root, "winfo_x", lambda: pos["x"])
+    monkeypatch.setattr(widget.root, "winfo_y", lambda: pos["y"])
+    widget._drag_start(types.SimpleNamespace(x_root=110, y_root=130))  # grabbed 10 px in
+    widget._drag_move(types.SimpleNamespace(x_root=160, y_root=170))
+    assert moves == ["+150+160"]
     widget._drag_end(None)
     cfg = w.load_config()
-    assert (cfg["x"], cfg["y"]) == (widget.root.winfo_x(), widget.root.winfo_y())
+    assert (cfg["x"], cfg["y"]) == (150, 160)
+    widget._drag_move(types.SimpleNamespace(x_root=500, y_root=500))  # not dragging: ignored
     widget._drag_end(None)  # a second release without a drag changes nothing
+    assert moves == ["+150+160"]
+    assert (w.load_config()["x"], w.load_config()["y"]) == (150, 160)
 
 
 def test_widget_toggle_topmost(widget, monkeypatch):

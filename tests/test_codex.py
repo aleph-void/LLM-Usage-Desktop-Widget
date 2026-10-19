@@ -151,6 +151,7 @@ def test_full_response(logged_in, fake_http):
     ]
     assert usage.limits[0].resets_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert usage.limits[1].resets_at is None
+    assert usage.credits == w.Credits(left=42.0, what="credits left")
 
 
 def test_limit_reached_marks_full_windows_critical(logged_in, fake_http):
@@ -169,7 +170,25 @@ def test_limit_reached_marks_full_windows_critical(logged_in, fake_http):
                                      {"has_credits": True, "unlimited": True, "balance": "5"}])
 def test_credits_hidden(logged_in, fake_http, credits):
     fake_http.responses[USAGE_URL] = {"credits": credits}
-    assert w.fetch_codex().limits == []
+    usage = w.fetch_codex()
+    assert usage.limits == []
+    assert usage.credits is None
+
+
+@pytest.mark.parametrize("balance, left", [("42", 42.0), ("12.5", 12.5), (7, 7.0), (None, 0.0)])
+def test_credit_balance_detected(logged_in, fake_http, balance, left):
+    credits = {"has_credits": True, "unlimited": False}
+    if balance is not None:
+        credits["balance"] = balance
+    fake_http.responses[USAGE_URL] = {"credits": credits}
+    assert w.fetch_codex().credits == w.Credits(left=left, what="credits left")
+
+
+def test_unreadable_credit_balance_shows_but_sets_no_credits(logged_in, fake_http):
+    fake_http.responses[USAGE_URL] = {"credits": {"has_credits": True, "unlimited": False, "balance": "lots"}}
+    usage = w.fetch_codex()
+    assert [lim.label for lim in usage.limits] == ["Credits: lots"]
+    assert usage.credits is None
 
 
 @pytest.mark.parametrize("rate_limit", [None, "x", [], {"primary_window": "x"}])

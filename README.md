@@ -146,9 +146,31 @@ With [synced settings](#settings-sync), a cutoff set on one computer applies to 
 to the same account, and each of them stops its own CLIs when it is reached (if it is running the widget
 and sees that within an hour).
 
+#### Credit cutoffs
+
+A provider that reports usage credits can have a second cutoff, an amount of credits, next to the
+percentage one. The widget offers it only when it sees such credits: *Stop Claude at extra usage* once
+Claude's extra usage (pay-as-you-go credits beyond the plan) is enabled, and *Stop Codex at credits left*
+when the Codex account has a credit balance. Providers without usage credits only get the percentage cutoff.
+
+- **Extra usage** counts upward, so the cutoff is the spend at which to stop: the menu offers amounts above
+  what is spent so far and below the monthly cap, if one is set (`$15`, `$20`, `$30`, …).
+- **Credits left** counts down, so the cutoff is the balance at which to stop: the menu offers amounts
+  below what is left (`100`, `75`, `50`, …).
+
+Either kind works like the percentage cutoff: it stops the provider's CLI on the first refresh that reaches
+it, leaves a note such as `⛔ Credit cutoff $20 reached — stopped 2 claude processes; cutoff cleared`,
+turns itself off, belongs to the signed-in account and syncs between computers. The two kinds are
+independent: reaching one leaves the other in place. In `config.json` any positive amount can be set,
+again with a plain number applying to any account:
+
+```json
+"credit_cutoff": {"Claude": 20, "Codex": {"<account id>": 100}}
+```
+
 ### Settings sync
 
-On macOS and Windows the settings, including each provider's cutoff, sync between your computers through
+On macOS and Windows the settings, including each provider's cutoffs, sync between your computers through
 iCloud Drive and OneDrive, in an `llm-usage-widget` folder. When a computer has both, the settings go to
 both, so it also links a Mac that only has iCloud with a PC that only has OneDrive; the most recently saved
 copy wins. This needs nothing but iCloud Drive (or iCloud for Windows) or OneDrive being signed in;

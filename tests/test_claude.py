@@ -238,20 +238,41 @@ def test_legacy_shape(logged_in, fake_http):
 def test_extra_usage_with_cap(logged_in, fake_http):
     fake_http.responses[USAGE_URL] = {
         "extra_usage": {"is_enabled": True, "used_credits": 12.5, "monthly_limit": 50, "utilization": 25}}
-    (lim,) = w.fetch_claude().limits
+    usage = w.fetch_claude()
+    (lim,) = usage.limits
     assert (lim.label, lim.percent) == ("Extra usage $12.50 / $50", 25.0)
+    assert usage.credits == w.Credits(used=12.5, cap=50.0, unit="$", what="extra usage")
 
 
 def test_extra_usage_without_cap(logged_in, fake_http):
     fake_http.responses[USAGE_URL] = {"extra_usage": {"is_enabled": True, "used_credits": 3}}
-    (lim,) = w.fetch_claude().limits
+    usage = w.fetch_claude()
+    (lim,) = usage.limits
     assert (lim.label, lim.percent) == ("Extra usage $3.00", 0.0)
+    assert usage.credits == w.Credits(used=3.0, cap=None, unit="$", what="extra usage")
 
 
 @pytest.mark.parametrize("extra", [None, {}, {"is_enabled": False, "used_credits": 5}, {"is_enabled": True}])
 def test_extra_usage_hidden(logged_in, fake_http, extra):
     fake_http.responses[USAGE_URL] = {"extra_usage": extra}
     assert w.fetch_claude().limits == []
+
+
+def test_extra_usage_enabled_but_unused_still_counts_as_credits(logged_in, fake_http):
+    """Nothing spent yet, so no row, but a credit cutoff can already be set."""
+    fake_http.responses[USAGE_URL] = {"extra_usage": {"is_enabled": True, "monthly_limit": 0}}
+    usage = w.fetch_claude()
+    assert usage.limits == []
+    assert usage.credits == w.Credits(used=0.0, cap=None, unit="$", what="extra usage")
+
+
+@pytest.mark.parametrize("extra", [None, {}, "garbage", {"is_enabled": False, "used_credits": 5},
+                                   {"is_enabled": True, "used_credits": "lots"},
+                                   {"is_enabled": True, "used_credits": float("nan")},
+                                   {"is_enabled": True, "used_credits": -1}])
+def test_no_credits_detected(logged_in, fake_http, extra):
+    fake_http.responses[USAGE_URL] = {"extra_usage": extra}
+    assert w.fetch_claude().credits is None
 
 
 def test_http_auth_error_propagates(logged_in, fake_http):

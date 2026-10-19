@@ -82,6 +82,22 @@ class Limit:
 
 
 @dataclass
+class Credits:
+    """Usage credits a provider reports, beyond its plan windows: pay-as-you-go spend (Claude's extra
+    usage) or a balance that is drawn down (Codex). A credit cutoff stops the CLI at an amount of these."""
+    used: float | None = None  # spent so far, when the provider counts upward
+    left: float | None = None  # balance left, when the provider only reports what remains
+    cap: float | None = None  # spending cap, if the provider has one
+    unit: str = ""  # "$", or "" for plain credits
+    what: str = "credits"  # how the menu names them: "extra usage", "credits left"
+
+    def __post_init__(self):
+        for value in (self.used, self.left, self.cap):
+            if value is not None and not math.isfinite(value):
+                raise ValueError("credit amounts must be finite")
+
+
+@dataclass
 class ProviderUsage:
     name: str
     plan: str = ""
@@ -90,6 +106,7 @@ class ProviderUsage:
     fetched_at: float = 0.0
     summary: str = ""  # top-bar text when no limit has a percentage, e.g. "$12.34"
     account: str = ""  # whose numbers these are, so a synced cutoff only applies to that account
+    credits: Credits | None = None  # usage credits, when the provider reports any
 
 
 class AuthError(Exception):
@@ -297,7 +314,7 @@ def config_dir() -> Path:
 # OneDrive thereby links a Mac on iCloud only with a PC on OneDrive only. The local
 # config.json keeps a full copy, used whenever no cloud folder is available.
 # "sync": false in the local file turns syncing off.
-LOCAL_ONLY_KEYS = ("x", "y", "taskbar_text", "collapsed", "sync", "cutoff_handled")
+LOCAL_ONLY_KEYS = ("x", "y", "taskbar_text", "collapsed", "sync", "cutoff_handled", "credit_cutoff_handled")
 
 
 def cloud_config_dirs() -> list[Path]:
@@ -532,12 +549,29 @@ def fetch_claude() -> ProviderUsage:
                 usage.limits.append(Limit(label, float(item["utilization"]), parse_time(item.get("resets_at"))))
 
     extra = data.get("extra_usage") or {}
-    if extra.get("is_enabled") and extra.get("used_credits"):
-        cap = extra.get("monthly_limit")
-        pct = float(extra.get("utilization") or 0)
-        label = f"Extra usage ${extra['used_credits']:.2f}" + (f" / ${cap:.0f}" if cap else "")
-        usage.limits.append(Limit(label, pct))
+    if isinstance(extra, dict) and extra.get("is_enabled"):
+        cap = _amount(extra.get("monthly_limit")) or None
+        used = _amount(extra.get("used_credits"))
+        if used is not None:  # extra usage is on, so a credit cutoff can be set, even before any is spent
+            usage.credits = Credits(used=used, cap=cap, unit="$", what="extra usage")
+        if used:
+            pct = float(extra.get("utilization") or 0)
+            label = f"Extra usage ${used:.2f}" + (f" / ${cap:.0f}" if cap else "")
+            usage.limits.append(Limit(label, pct))
     return usage
+
+
+def _amount(value) -> float | None:
+    """A finite, non-negative number from a JSON number or numeric string (0 when missing), else None."""
+    if value is None:
+        return 0.0
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
 
 
 # --------------------------------------------------------------------------
@@ -629,8 +663,11 @@ def fetch_codex() -> ProviderUsage:
                 name = item.get("limit_name") or item.get("metered_feature") or item.get("name") or "Other"
                 _codex_windows(str(name), item.get("rate_limit", item), usage.limits)
     credits = data.get("credits") or {}
-    if credits.get("has_credits") and not credits.get("unlimited"):
+    if isinstance(credits, dict) and credits.get("has_credits") and not credits.get("unlimited"):
         usage.limits.append(Limit(f"Credits: {credits.get('balance', '0')}", 0))
+        balance = _amount(credits.get("balance"))
+        if balance is not None:
+            usage.credits = Credits(left=balance, what="credits left")
     return usage
 
 
@@ -1399,14 +1436,21 @@ def fetch_all() -> list[ProviderUsage]:
 # refresh that finds a provider at or over its cutoff stops the CLIs that draw on it
 # (Claude Code for Claude, the Codex CLI for Codex, whichever of the two runs on
 # the cloud for Bedrock, Vertex AI and Azure), then clears that cutoff so the CLIs can be started again.
-# With synced settings every computer signed in to the same account stops its own
-# CLIs; a cutoff set from the menu belongs to the account signed in there, so another
-# computer's different account is left alone. In config.json a number applies to any
-# account:
+# A provider that reports usage credits (Claude's extra usage, Codex's credit balance)
+# can also have a credit cutoff: an amount of extra usage spent, or of credits left,
+# that stops its CLI the same way. With synced settings every computer signed in to
+# the same account stops its own CLIs; a cutoff set from the menu belongs to the account
+# signed in there, so another computer's different account is left alone. In config.json
+# a number applies to any account:
 #
 #     "cutoff": {"Claude": {"<account uuid>/<org uuid>": 95}, "Codex": 90, "Bedrock": 100}
+#     "credit_cutoff": {"Claude": 20, "Codex": {"<account id>": 100}}
 
 CUTOFF_STEP = 5  # the menu offers every multiple of this above the current usage, below 100
+CREDIT_CUTOFF_KEY = "credit_cutoff"
+CUTOFF_KEYS = ("cutoff", CREDIT_CUTOFF_KEY)
+# Credit amounts the menu offers: 1, 1.5, 2, 3, 5, 7.5 in every power of ten up to 75 000.
+CREDIT_CUTOFF_STEPS = tuple(float(m * 10 ** k) for k in range(5) for m in (1, 1.5, 2, 3, 5, 7.5))
 CUTOFF_SYNC_WINDOW = 3600  # how long other computers act on a cutoff reached on one of them
 # npm-installed CLIs run as `node <script>`; these mark the script's package.
 CLI_PACKAGES = {"claude": "@anthropic-ai/claude-code/", "codex": "@openai/codex/"}
@@ -1415,18 +1459,19 @@ SCRIPT_RUNTIMES = {"node", "bun", "deno"}
 DESKTOP_APP_PATHS = (".app/contents/", "/anthropicclaude/", "/windowsapps/")
 
 
-def cutoff_for(cfg: dict, name: str, account: str = "") -> float | None:
-    """The cutoff percentage set for this provider and account, or None if it has none.
+def cutoff_for(cfg: dict, name: str, account: str = "", key: str = "cutoff") -> float | None:
+    """The cutoff set for this provider and account, or None if it has none.
 
+    `key` is "cutoff" for the percentage of the fullest limit, CREDIT_CUTOFF_KEY for the credit amount.
     A number applies to any account; {account: number} only to those accounts.
     """
-    cutoffs = cfg.get("cutoff")
+    cutoffs = cfg.get(key)
     value = cutoffs.get(name) if isinstance(cutoffs, dict) else None
     if isinstance(value, dict):
         value = value.get(account) if account else None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         return None
-    return float(value) if 0 < value <= 100 else None
+    return float(value) if 0 < value <= (100 if key == "cutoff" else math.inf) else None
 
 
 def _dict_setting(cfg: dict, key: str) -> dict:
@@ -1434,9 +1479,11 @@ def _dict_setting(cfg: dict, key: str) -> dict:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _put_cutoff(cfg: dict, name: str, account: str, value: float | None) -> None:
+def _put_cutoff(cfg: dict, name: str, account: str, value: float | None, key: str = "cutoff") -> None:
     """Set (or with None, remove) a provider's cutoff for this account, or for any account without one."""
-    cutoffs = _dict_setting(cfg, "cutoff")
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)  # 20, not 20.0, in config.json
+    cutoffs = _dict_setting(cfg, key)
     if account:
         per_account = _dict_setting(cutoffs, name)  # an any-account number gives way to this one
         per_account.pop(account, None)
@@ -1449,15 +1496,15 @@ def _put_cutoff(cfg: dict, name: str, account: str, value: float | None) -> None
         cutoffs.pop(name, None)
     cutoffs = {k: v for k, v in cutoffs.items() if v != {}}
     if cutoffs:
-        cfg["cutoff"] = cutoffs
+        cfg[key] = cutoffs
     else:
-        cfg.pop("cutoff", None)
+        cfg.pop(key, None)
 
 
-def set_cutoff(name: str, value: int | None, account: str = "") -> dict:
+def set_cutoff(name: str, value: float | None, account: str = "", key: str = "cutoff") -> dict:
     """Save a provider's cutoff for an account (None turns it off); returns the updated config."""
     cfg = load_config()  # re-read so hand edits and other computers' changes are kept
-    _put_cutoff(cfg, name, account, value)
+    _put_cutoff(cfg, name, account, value, key)
     save_config(cfg)
     return cfg
 
@@ -1485,6 +1532,83 @@ def cutoff_menu_providers(cfg: dict, data: list[ProviderUsage]) -> list[tuple[st
 def cutoff_menu_label(cfg: dict, name: str, account: str = "") -> str:
     cutoff = cutoff_for(cfg, name, account)
     return f"Stop {name} at: " + (f"{cutoff:.0f}%" if cutoff is not None else "off")
+
+
+def credit_amount(value: float, unit: str = "") -> str:
+    """An amount of credits for the menu: "$20", "$12.50", "100", "7.5"."""
+    if float(value).is_integer():
+        return f"{unit}{value:.0f}"
+    return f"{unit}{value:.2f}" if unit == "$" else f"{unit}{value:g}"
+
+
+def credits_reached(credits: Credits, cutoff: float) -> bool:
+    """Whether the spend has reached this amount or, for a provider that only reports a balance, it has fallen to it."""
+    if credits.used is not None:
+        return credits.used >= cutoff
+    return credits.left is not None and credits.left <= cutoff
+
+
+def credit_cutoff_choices(cfg: dict, u: ProviderUsage) -> list[float]:
+    """The credit cutoffs the menu offers for a provider with usage credits: off (0), then the amounts from
+    CREDIT_CUTOFF_STEPS its credits have not reached.
+
+    For spend that is above what is spent so far and below the cap, if there is one (without a cap: up to ten
+    times the spend, or 100); for a balance, below what is left, down to a hundredth of it. Anything already
+    reached would fire at once, so it isn't offered. A cutoff set by hand is listed too, so the menu can show it.
+    """
+    credits = u.credits
+    if credits is None:
+        return [0]
+    if credits.used is not None:
+        if credits.cap:
+            choices = {v for v in CREDIT_CUTOFF_STEPS if credits.used < v < credits.cap}
+        else:
+            choices = {v for v in CREDIT_CUTOFF_STEPS if credits.used < v <= max(100.0, 10 * credits.used)}
+    elif credits.left is not None:
+        choices = {v for v in CREDIT_CUTOFF_STEPS if credits.left / 100 <= v < credits.left}
+    else:
+        choices = set()
+    current = cutoff_for(cfg, u.name, u.account, CREDIT_CUTOFF_KEY)
+    if current is not None and not credits_reached(credits, current):
+        choices.add(current)
+    return [0, *sorted(choices)]
+
+
+def credit_cutoff_menu_label(cfg: dict, u: ProviderUsage) -> str:
+    credits = u.credits or Credits()
+    cutoff = cutoff_for(cfg, u.name, u.account, CREDIT_CUTOFF_KEY)
+    return f"Stop {u.name} at {credits.what}: " + (credit_amount(cutoff, credits.unit) if cutoff is not None else "off")
+
+
+def cutoff_menu_entries(cfg: dict, data: list[ProviderUsage]) -> list[tuple[str, str, str, str, list[tuple[float, str]]]]:
+    """Every cutoff submenu to show: (config key, provider, account, menu label, [(value, item text), ...]).
+
+    Each provider gets its percentage cutoff and, if it reports usage credits, its credit cutoff after it.
+    """
+    entries = []
+    for u in data:
+        entries.append(("cutoff", u.name, u.account, cutoff_menu_label(cfg, u.name, u.account),
+                        [(v, f"{v}%" if v else "Off") for v in cutoff_choices(cfg, u)]))
+        if u.credits is not None:
+            entries.append((CREDIT_CUTOFF_KEY, u.name, u.account, credit_cutoff_menu_label(cfg, u),
+                            [(v, credit_amount(v, u.credits.unit) if v else "Off")
+                             for v in credit_cutoff_choices(cfg, u)]))
+    return entries
+
+
+def cutoff_reached(u: ProviderUsage, cutoff: float, key: str = "cutoff") -> bool:
+    """Whether this provider's numbers are at or over a cutoff of the given kind."""
+    if key == CREDIT_CUTOFF_KEY:
+        return u.credits is not None and credits_reached(u.credits, cutoff)
+    top = top_limit(u)
+    return top is not None and top.percent >= cutoff
+
+
+def cutoff_note(u: ProviderUsage, cutoff: float, key: str = "cutoff") -> str:
+    """"Cutoff 95%" or "Credit cutoff $20", for the note left in the provider's limits."""
+    if key == CREDIT_CUTOFF_KEY:
+        return "Credit cutoff " + credit_amount(cutoff, u.credits.unit if u.credits else "")
+    return f"Cutoff {cutoff:.0f}%"
 
 
 def cutoff_clis(name: str) -> set[str]:
@@ -1589,43 +1713,48 @@ def stop_process(pid: int) -> bool:
 
 
 def enforce_cutoffs(results: list[ProviderUsage]) -> None:
-    """Stop the CLIs of every provider at or over its cutoff, then clear that cutoff.
+    """Stop the CLIs of every provider at or over its cutoff (percentage or credits), then clear that cutoff.
 
-    The cleared cutoff is recorded in "cutoff_reached", so other computers sharing the
-    settings stop their CLIs too: once, if they see it within CUTOFF_SYNC_WINDOW.
-    What happened is noted in the provider's limits.
+    The cleared cutoff is recorded in "cutoff_reached" ("credit_cutoff_reached"), so other
+    computers sharing the settings stop their CLIs too: once, if they see it within
+    CUTOFF_SYNC_WINDOW. What happened is noted in the provider's limits.
     """
     cfg = load_config()
-    reached, handled = (_dict_setting(cfg, k) for k in ("cutoff_reached", "cutoff_handled"))
     now = time.time()
-    todo = []  # (provider, cutoff, where it was reached)
-    for u in results:
-        cutoff = cutoff_for(cfg, u.name, u.account)
-        top = top_limit(u)
-        mark = reached.get(u.name)
-        if cutoff is not None and top is not None and top.percent >= cutoff:
-            _put_cutoff(cfg, u.name, u.account, None)
-            reached[u.name] = {"at": now, "cutoff": cutoff, "account": u.account}
-            handled[u.name] = now
-            todo.append((u, cutoff, ""))
-        elif (isinstance(mark, dict) and all(isinstance(mark.get(k), (int, float)) for k in ("at", "cutoff"))
-              and mark.get("account", "") == u.account  # another computer's other account is none of ours
-              and abs(now - mark["at"]) < CUTOFF_SYNC_WINDOW and handled.get(u.name) != mark["at"]):
-            handled[u.name] = mark["at"]
-            todo.append((u, float(mark["cutoff"]), " on another computer"))
+    todo = []  # (provider, kind of cutoff, cutoff, where it was reached)
+    marks = {}  # kind: (reached, handled)
+    for key in CUTOFF_KEYS:
+        reached, handled = (_dict_setting(cfg, key + k) for k in ("_reached", "_handled"))
+        for u in results:
+            cutoff = cutoff_for(cfg, u.name, u.account, key)
+            mark = reached.get(u.name)
+            if cutoff is not None and cutoff_reached(u, cutoff, key):
+                _put_cutoff(cfg, u.name, u.account, None, key)
+                reached[u.name] = {"at": now, "cutoff": cutoff, "account": u.account}
+                handled[u.name] = now
+                todo.append((u, key, cutoff, ""))
+            elif (isinstance(mark, dict) and all(isinstance(mark.get(k), (int, float)) for k in ("at", "cutoff"))
+                  and mark.get("account", "") == u.account  # another computer's other account is none of ours
+                  and abs(now - mark["at"]) < CUTOFF_SYNC_WINDOW and handled.get(u.name) != mark["at"]):
+                handled[u.name] = mark["at"]
+                todo.append((u, key, float(mark["cutoff"]), " on another computer"))
+        marks[key] = (reached, handled)
     if not todo:
         return
     running = find_cli_processes()
-    for u, cutoff, where in todo:
+    for u, key, cutoff, where in todo:
         clis = cutoff_clis(u.name)
         stopped = sum(stop_process(pid) for pid, name in running if name in clis)
+        running = [(pid, name) for pid, name in running if name not in clis]  # signalled once, not again per cutoff
         what = " and ".join(sorted(clis)) or "CLI"
         if stopped:
             note = f"stopped {stopped} {what} process" + ("es" if stopped != 1 else "")
         else:
             note = f"no {what} running"
-        u.limits.append(Limit(f"⛔ Cutoff {cutoff:.0f}% reached{where} — {note}; cutoff cleared", None))
-    cfg["cutoff_reached"], cfg["cutoff_handled"] = reached, handled
+        u.limits.append(Limit(f"⛔ {cutoff_note(u, cutoff, key)} reached{where} — {note}; cutoff cleared", None))
+    for key, (reached, handled) in marks.items():
+        if reached or handled:
+            cfg[key + "_reached"], cfg[key + "_handled"] = reached, handled
     save_config(cfg)
 
 
@@ -1884,15 +2013,14 @@ class Widget:
             menu.add_separator()
         menu.add_command(label="Refresh now", command=self.refresh)
         menu.add_checkbutton(label="Always on top", variable=self.topmost_var, command=self._toggle_topmost)
-        for name, account, choices in cutoff_menu_providers(self.cfg, self.data):
-            cutoff = cutoff_for(self.cfg, name, account)
-            var = tk.IntVar(value=int(cutoff) if cutoff is not None else 0)
+        for key, name, account, label, choices in cutoff_menu_entries(self.cfg, self.data):
+            var = tk.DoubleVar(value=cutoff_for(self.cfg, name, account, key) or 0.0)
             self.cutoff_vars.append(var)  # Tk forgets variables Python no longer references
             sub = tk.Menu(menu, tearoff=0)
-            for value in choices:
-                sub.add_radiobutton(label=f"{value}%" if value else "Off", variable=var, value=value,
-                                    command=lambda n=name, a=account, v=value: self._set_cutoff(n, a, v))
-            menu.add_cascade(label=cutoff_menu_label(self.cfg, name, account), menu=sub)
+            for value, text in choices:
+                sub.add_radiobutton(label=text, variable=var, value=float(value),
+                                    command=lambda k=key, n=name, a=account, v=value: self._set_cutoff(k, n, a, v))
+            menu.add_cascade(label=label, menu=sub)
         about = tk.Menu(menu, tearoff=0)
         about.add_command(label=f"LLM Usage Widget — Version {__version__}", state="disabled")
         about.add_command(label=f"Source: {REPO_URL}", command=lambda: webbrowser.open(REPO_URL))
@@ -1908,8 +2036,8 @@ class Widget:
         finally:
             self.menu.grab_release()
 
-    def _set_cutoff(self, name: str, account: str, value: int):
-        self.cfg = set_cutoff(name, value or None, account)
+    def _set_cutoff(self, key: str, name: str, account: str, value: float):
+        self.cfg = set_cutoff(name, value or None, account, key)
 
     def _toggle_topmost(self):
         self.cfg = update_config(topmost=self.topmost_var.get())
@@ -2152,8 +2280,8 @@ class Tray:
         self.render()
         return False
 
-    def _set_cutoff(self, _item, name: str, account: str, value: int):
-        set_cutoff(name, value or None, account)
+    def _set_cutoff(self, _item, key: str, name: str, account: str, value: float):
+        set_cutoff(name, value or None, account, key)
         self.GLib.idle_add(self.render)  # not from inside the menu's own signal handler
 
     def _toggle_collapsed(self, _item):
@@ -2238,16 +2366,16 @@ class Tray:
             item = Gtk.MenuItem(label=f"Open {name} usage page")
             item.connect("activate", lambda _w, u=url: Gtk.show_uri_on_window(None, u, Gtk.get_current_event_time()))
             menu.append(item)
-        for name, account, choices in cutoff_menu_providers(cfg, self.data):
-            cutoff = cutoff_for(cfg, name, account)
+        for key, name, account, label, choices in cutoff_menu_entries(cfg, self.data):
+            cutoff = cutoff_for(cfg, name, account, key) or 0
             sub = Gtk.Menu()
-            for value in choices:
-                choice = Gtk.CheckMenuItem(label=f"{value}%" if value else "Off")
+            for value, text in choices:
+                choice = Gtk.CheckMenuItem(label=text)
                 choice.set_draw_as_radio(True)
-                choice.set_active(value == (cutoff or 0))
-                choice.connect("activate", self._set_cutoff, name, account, value)
+                choice.set_active(value == cutoff)
+                choice.connect("activate", self._set_cutoff, key, name, account, value)
                 sub.append(choice)
-            item = Gtk.MenuItem(label=cutoff_menu_label(cfg, name, account))
+            item = Gtk.MenuItem(label=label)
             item.set_submenu(sub)
             menu.append(item)
         collapse = Gtk.CheckMenuItem(label=COLLAPSE_LABEL)
@@ -2785,15 +2913,15 @@ class DesktopTray:
         self.cfg = update_config(collapsed=not self.cfg.get("collapsed", False))
         self._on_main(self._render)
 
-    def _cutoff_action(self, name: str, account: str, value: int):
+    def _cutoff_action(self, key: str, name: str, account: str, value: float):
         def action():
-            self.cfg = set_cutoff(name, value or None, account)
+            self.cfg = set_cutoff(name, value or None, account, key)
             if sys.platform != "win32":  # on Windows the menu is rebuilt when it is opened
                 self._on_main(self._render)
         return action
 
-    def _cutoff_checked(self, name: str, account: str, value: int):
-        return lambda _item: (cutoff_for(self.cfg, name, account) or 0) == value
+    def _cutoff_checked(self, key: str, name: str, account: str, value: float):
+        return lambda _item: (cutoff_for(self.cfg, name, account, key) or 0) == value
 
     def _quit(self):
         if self.strip:
@@ -2838,11 +2966,11 @@ class DesktopTray:
         items.append(item("Refresh now", lambda: self.wake.set()))
         for name, url in usage_pages(self.data).items():
             items.append(item(f"Open {name} usage page", (lambda u: lambda: webbrowser.open(u))(url)))
-        for name, account, choices in cutoff_menu_providers(self.cfg, self.data):
-            items.append(item(cutoff_menu_label(self.cfg, name, account), self.pystray.Menu(*(
-                item(f"{value}%" if value else "Off", self._cutoff_action(name, account, value),
-                     checked=self._cutoff_checked(name, account, value), radio=True)
-                for value in choices))))
+        for key, name, account, label, choices in cutoff_menu_entries(self.cfg, self.data):
+            items.append(item(label, self.pystray.Menu(*(
+                item(text, self._cutoff_action(key, name, account, value),
+                     checked=self._cutoff_checked(key, name, account, value), radio=True)
+                for value, text in choices))))
         if self.strip:
             items.append(item("Show usage on the taskbar", lambda: self._toggle_taskbar_text(),
                               checked=lambda _i: self.cfg.get("taskbar_text", True)))

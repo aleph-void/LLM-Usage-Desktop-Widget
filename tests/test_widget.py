@@ -272,6 +272,27 @@ def test_widget_cutoff_menu(widget):
     assert widget.menu.entrycget(3, "label") == "Stop Codex at: 95%"
 
 
+def test_widget_credit_cutoff_menu(widget):
+    widget._build_menu()
+    assert not any(" at extra usage" in lab or " at credits left" in lab for lab in menu_labels(widget.menu))
+    widget.data[0].credits = w.Credits(used=12.5, cap=50, unit="$", what="extra usage")
+    w.save_config({"credit_cutoff": {"Claude": 30}})
+    widget.cfg = w.load_config()
+    widget._build_menu()
+    menu = widget.menu
+    labels = menu_labels(menu)
+    assert labels[2:5] == ["Stop Claude at: off", "Stop Claude at extra usage: $30", "Stop Codex at: off"]
+    claude = widget.root.nametowidget(menu.entrycget(3, "menu"))
+    assert menu_labels(claude) == ["Off", "$15", "$20", "$30"]
+    assert widget.cutoff_vars[1].get() == 30
+    claude.invoke(1)  # $15
+    assert w.load_config() == {"credit_cutoff": {"Claude": 15}}
+    assert widget.cfg == w.load_config()
+    widget._build_menu()
+    assert menu_labels(widget.menu)[3] == "Stop Claude at extra usage: $15"
+    assert len(widget.menu.winfo_children()) == 5  # three providers, one credit cutoff and About
+
+
 def test_widget_reloads_settings_after_a_fetch(widget):
     w.update_config(cutoff={"Claude": 99})  # e.g. changed on another computer; above the sample's 95%
     widget.refresh()

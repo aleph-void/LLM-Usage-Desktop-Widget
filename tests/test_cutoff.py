@@ -135,6 +135,119 @@ class AccountCutoffTests(TempConfig):
                 self.assertEqual(w.claude_account(), "")
 
 
+def with_credits(name, *percents, used=None, left=None, cap=None, account=""):
+    u = usage(name, *percents)
+    unit, what = ("$", "extra usage") if used is not None else ("", "credits left")
+    u.credits = w.Credits(used=used, left=left, cap=cap, unit=unit, what=what)
+    u.account = account
+    return u
+
+
+class CreditCutoffConfigTests(TempConfig):
+    KEY = w.CREDIT_CUTOFF_KEY
+
+    def test_credit_cutoff_is_an_amount_not_a_percentage(self):
+        cfg = {"credit_cutoff": {"Claude": 250, "Codex": {"me": 7.5}}, "cutoff": {"Claude": 95}}
+        self.assertEqual(w.cutoff_for(cfg, "Claude", key=self.KEY), 250.0)
+        self.assertEqual(w.cutoff_for(cfg, "Codex", "me", self.KEY), 7.5)
+        self.assertIsNone(w.cutoff_for(cfg, "Codex", key=self.KEY))
+        self.assertEqual(w.cutoff_for(cfg, "Claude"), 95.0)  # the two kinds are kept apart
+        self.assertIsNone(w.cutoff_for(cfg, "Codex"))
+        for value in (0, -5, "20", None, True, [20], float("inf"), float("nan")):
+            self.assertIsNone(w.cutoff_for({"credit_cutoff": {"Claude": value}}, "Claude", key=self.KEY), value)
+
+    def test_set_credit_cutoff(self):
+        w.set_cutoff("Claude", 20.0, key=self.KEY)
+        w.set_cutoff("Codex", 7.5, "me", self.KEY)
+        w.set_cutoff("Claude", 95)
+        self.assertEqual(w.load_config(), {"credit_cutoff": {"Claude": 20, "Codex": {"me": 7.5}}, "cutoff": {"Claude": 95}})
+        self.assertIsInstance(w.load_config()["credit_cutoff"]["Claude"], int)  # 20, not 20.0
+        w.set_cutoff("Claude", None, key=self.KEY)
+        w.set_cutoff("Codex", None, "me", self.KEY)
+        self.assertEqual(w.load_config(), {"cutoff": {"Claude": 95}})
+
+    def test_credit_amount(self):
+        self.assertEqual(w.credit_amount(20, "$"), "$20")
+        self.assertEqual(w.credit_amount(7.5, "$"), "$7.50")
+        self.assertEqual(w.credit_amount(100.0), "100")
+        self.assertEqual(w.credit_amount(1.5), "1.5")
+
+    def test_menu_label(self):
+        cfg = {"credit_cutoff": {"Claude": 20, "Codex": 7.5}}
+        self.assertEqual(w.credit_cutoff_menu_label(cfg, with_credits("Claude", used=3)), "Stop Claude at extra usage: $20")
+        self.assertEqual(w.credit_cutoff_menu_label({}, with_credits("Claude", used=3)), "Stop Claude at extra usage: off")
+        self.assertEqual(w.credit_cutoff_menu_label(cfg, with_credits("Codex", left=42)), "Stop Codex at credits left: 7.5")
+
+    def test_spend_choices_lie_between_the_spend_and_the_cap(self):
+        self.assertEqual(w.credit_cutoff_choices({}, with_credits("Claude", used=12.5, cap=50)), [0, 15, 20, 30])
+        self.assertEqual(w.credit_cutoff_choices({}, with_credits("Claude", used=0, cap=50)),
+                         [0, 1, 1.5, 2, 3, 5, 7.5, 10, 15, 20, 30])
+        self.assertEqual(w.credit_cutoff_choices({}, with_credits("Claude", used=20, cap=20)), [0])  # 20 would fire at once
+        self.assertEqual(w.credit_cutoff_choices({}, with_credits("Claude", used=49, cap=50)), [0])
+
+    def test_spend_choices_without_a_cap(self):
+        self.assertEqual(w.credit_cutoff_choices({}, with_credits("Claude", used=3)),
+                         [0, 5, 7.5, 10, 15, 20, 30, 50, 75, 100])
+        self.assertEqual(w.credit_cutoff_choices({}, with_credits("Claude", used=300)),
+                         [0, 500, 750, 1000, 1500, 2000, 3000])
+
+    def test_balance_choices_lie_below_what_is_left(self):
+        self.assertEqual(w.credit_cutoff_choices({}, with_credits("Codex", left=42)),
+                         [0, 1, 1.5, 2, 3, 5, 7.5, 10, 15, 20, 30])
+        self.assertEqual(w.credit_cutoff_choices({}, with_credits("Codex", left=5000)),
+                         [0, 50, 75, 100, 150, 200, 300, 500, 750, 1000, 1500, 2000, 3000])
+        self.assertEqual(w.credit_cutoff_choices({}, with_credits("Codex", left=1)), [0])
+        self.assertEqual(w.credit_cutoff_choices({}, with_credits("Codex", left=0)), [0])
+
+    def test_choices_keep_a_hand_set_cutoff_that_is_not_reached(self):
+        self.assertEqual(w.credit_cutoff_choices({"credit_cutoff": {"Claude": 42}}, with_credits("Claude", used=30, cap=50)),
+                         [0, 42])
+        self.assertEqual(w.credit_cutoff_choices({"credit_cutoff": {"Claude": 25}}, with_credits("Claude", used=30, cap=50)),
+                         [0])  # already past it
+        self.assertEqual(w.credit_cutoff_choices({"credit_cutoff": {"Codex": 0.25}}, with_credits("Codex", left=1)), [0, 0.25])
+        self.assertEqual(w.credit_cutoff_choices({"credit_cutoff": {"Codex": 2}}, with_credits("Codex", left=1)), [0])
+
+    def test_no_credits_means_no_choices(self):
+        self.assertEqual(w.credit_cutoff_choices({}, usage("Claude", 50)), [0])
+        self.assertEqual(w.credit_cutoff_choices({}, w.ProviderUsage("Codex", credits=w.Credits())), [0])
+
+    def test_menu_entries_offer_credit_cutoffs_only_where_credits_are_reported(self):
+        self.assertEqual(w.cutoff_menu_entries({}, []), [])
+        claude = with_credits("Claude", 88, used=12.5, cap=50, account="me")
+        codex = with_credits("Codex", 10, left=4)
+        cfg = {"cutoff": {"Codex": 50}, "credit_cutoff": {"Claude": {"me": 20}}}
+        self.assertEqual(w.cutoff_menu_entries(cfg, [claude, codex, usage("Bedrock", 97.5)]), [
+            ("cutoff", "Claude", "me", "Stop Claude at: off", [(0, "Off"), (90, "90%"), (95, "95%")]),
+            ("credit_cutoff", "Claude", "me", "Stop Claude at extra usage: $20",
+             [(0, "Off"), (15, "$15"), (20, "$20"), (30, "$30")]),
+            ("cutoff", "Codex", "", "Stop Codex at: 50%", [(0, "Off"), *((v, f"{v}%") for v in range(15, 100, 5))]),
+            ("credit_cutoff", "Codex", "", "Stop Codex at credits left: off",
+             [(0, "Off"), (1, "1"), (1.5, "1.5"), (2, "2"), (3, "3")]),
+            ("cutoff", "Bedrock", "", "Stop Bedrock at: off", [(0, "Off")]),
+        ])
+
+    def test_credits_reached(self):
+        spend = w.Credits(used=20, cap=50)
+        self.assertTrue(w.credits_reached(spend, 20))
+        self.assertTrue(w.credits_reached(spend, 19.99))
+        self.assertFalse(w.credits_reached(spend, 20.01))
+        balance = w.Credits(left=10)
+        self.assertTrue(w.credits_reached(balance, 10))
+        self.assertTrue(w.credits_reached(balance, 15))
+        self.assertFalse(w.credits_reached(balance, 9.99))
+        self.assertFalse(w.credits_reached(w.Credits(), 1))
+        self.assertTrue(w.cutoff_reached(with_credits("Claude", 5, used=20), 20, w.CREDIT_CUTOFF_KEY))
+        self.assertFalse(w.cutoff_reached(usage("Claude", 99), 20, w.CREDIT_CUTOFF_KEY))
+        self.assertTrue(w.cutoff_reached(usage("Claude", 99), 95))
+        self.assertFalse(w.cutoff_reached(with_credits("Claude", 5, used=20), 95))
+
+    def test_credits_must_be_finite(self):
+        with self.assertRaises(ValueError):
+            w.Credits(used=float("inf"))
+        with self.assertRaises(ValueError):
+            w.Credits(left=float("nan"))
+
+
 class CliNameTests(unittest.TestCase):
     def test_native_binaries(self):
         self.assertEqual(w.cli_name("claude"), "claude")
@@ -332,6 +445,89 @@ class EnforceCutoffsTests(TempConfig):
         self.assertEqual(stopped, [11, 12])
 
 
+class EnforceCreditCutoffsTests(TempConfig):
+    RUNNING = EnforceCutoffsTests.RUNNING
+    notes = EnforceCutoffsTests.notes
+
+    def enforce(self, results, cutoffs, running=RUNNING, credit_cutoffs=None):
+        w.save_config({"x": 5, "cutoff": cutoffs, "credit_cutoff": credit_cutoffs or {}})
+        with mock.patch.object(w, "find_cli_processes", return_value=running) as find, \
+                mock.patch.object(w, "stop_process", return_value=True) as stop:
+            w.enforce_cutoffs(results)
+        return find, sorted(c.args[0] for c in stop.call_args_list)
+
+    def test_spend_at_the_credit_cutoff_stops_the_cli(self):
+        claude = with_credits("Claude", 40, used=20, cap=50)
+        _, stopped = self.enforce([claude, usage("Codex", 96)], {}, credit_cutoffs={"Claude": 20, "Codex": 5})
+        self.assertEqual(stopped, [11, 12])
+        self.assertEqual(self.notes(claude), ["⛔ Credit cutoff $20 reached — stopped 2 claude processes; cutoff cleared"])
+        self.assertEqual(w.load_config()["credit_cutoff"], {"Codex": 5})  # Claude's cleared; Codex has no credits
+
+    def test_balance_falling_to_the_credit_cutoff_stops_the_cli(self):
+        codex = with_credits("Codex", 10, left=7.5)
+        _, stopped = self.enforce([codex], {}, credit_cutoffs={"Codex": 7.5})
+        self.assertEqual(stopped, [21])
+        self.assertEqual(self.notes(codex), ["⛔ Credit cutoff 7.5 reached — stopped 1 codex process; cutoff cleared"])
+
+    def test_below_the_credit_cutoff_nothing_happens(self):
+        find, stopped = self.enforce([with_credits("Claude", 99, used=19.99, cap=50), with_credits("Codex", 99, left=11)],
+                                     {}, credit_cutoffs={"Claude": 20, "Codex": 10})
+        find.assert_not_called()
+        self.assertEqual(stopped, [])
+        self.assertEqual(w.load_config()["credit_cutoff"], {"Claude": 20, "Codex": 10})
+
+    def test_percent_and_credit_cutoffs_are_independent(self):
+        claude = with_credits("Claude", 96, used=5, cap=50)
+        with mock.patch.object(w.time, "time", return_value=1000.0):
+            _, stopped = self.enforce([claude], {"Claude": 95}, credit_cutoffs={"Claude": 20})
+        self.assertEqual(stopped, [11, 12])
+        self.assertEqual(self.notes(claude), ["⛔ Cutoff 95% reached — stopped 2 claude processes; cutoff cleared"])
+        cfg = w.load_config()
+        self.assertEqual(cfg["credit_cutoff"], {"Claude": 20})  # the credit cutoff stays
+        self.assertNotIn("cutoff", cfg)
+        self.assertEqual(cfg["cutoff_reached"], {"Claude": {"at": 1000.0, "cutoff": 95.0, "account": ""}})
+        self.assertNotIn("credit_cutoff_reached", cfg)
+        self.assertNotIn("credit_cutoff_handled", cfg)
+
+    def test_both_reached_at_once(self):
+        claude = with_credits("Claude", 96, used=25, cap=50)
+        _, stopped = self.enforce([claude], {"Claude": 95}, credit_cutoffs={"Claude": 20})
+        self.assertEqual(stopped, [11, 12])  # signalled once, not once per cutoff
+        self.assertEqual(self.notes(claude), ["⛔ Cutoff 95% reached — stopped 2 claude processes; cutoff cleared",
+                                              "⛔ Credit cutoff $20 reached — no claude running; cutoff cleared"])
+        cfg = w.load_config()
+        self.assertNotIn("cutoff", cfg)
+        self.assertNotIn("credit_cutoff", cfg)
+
+    def test_credit_cutoff_fires_only_once(self):
+        _, stopped = self.enforce([with_credits("Codex", 1, left=5)], {}, credit_cutoffs={"Codex": 10})
+        self.assertEqual(stopped, [21])
+        codex = with_credits("Codex", 1, left=4)
+        with mock.patch.object(w, "find_cli_processes", return_value=self.RUNNING) as find, \
+                mock.patch.object(w, "stop_process") as stop:
+            w.enforce_cutoffs([codex])
+        find.assert_not_called()
+        stop.assert_not_called()
+        self.assertEqual(self.notes(codex), [])
+
+    def test_only_the_accounts_credit_cutoff_applies(self):
+        mine = with_credits("Claude", 1, used=30, account="me")
+        _, stopped = self.enforce([mine], {}, credit_cutoffs={"Claude": {"me": 20, "work": 10}})
+        self.assertEqual(stopped, [11, 12])
+        self.assertEqual(w.load_config()["credit_cutoff"], {"Claude": {"work": 10}})
+        other = with_credits("Claude", 1, used=30, account="someone-else")
+        find, stopped = self.enforce([other], {}, credit_cutoffs={"Claude": {"me": 20}})
+        find.assert_not_called()
+        self.assertEqual(stopped, [])
+
+    def test_a_credit_cutoff_without_credits_never_fires(self):
+        find, stopped = self.enforce([usage("Claude", 100), usage("Codex", 100)], {},
+                                     credit_cutoffs={"Claude": 1, "Codex": 1})
+        find.assert_not_called()
+        self.assertEqual(stopped, [])
+        self.assertEqual(w.load_config()["credit_cutoff"], {"Claude": 1, "Codex": 1})
+
+
 class CloudConfig(TempConfig):
     """Also gives every computer the same temporary cloud folder; the sync itself is tested in test_sync.py."""
 
@@ -417,6 +613,35 @@ class SyncedCutoffTests(CloudConfig):
         w.set_cutoff("Claude", 95)
         self.assertEqual(self.enforce_on("pc", [usage("Claude", 96)], [(2, "claude")], 1200), [2])
         self.assertEqual(self.enforce_on("mac", [usage("Claude", 96)], [(1, "claude")], 1300), [1])
+
+
+class SyncedCreditCutoffTests(CloudConfig):
+    enforce_on = SyncedCutoffTests.enforce_on
+    notes = SyncedCutoffTests.notes
+
+    def test_every_computer_stops_its_own_clis_once_for_a_credit_cutoff(self):
+        self.use_computer("mac")
+        w.set_cutoff("Claude", 20, key=w.CREDIT_CUTOFF_KEY)
+        w.set_cutoff("Claude", 90)
+        self.assertEqual(self.enforce_on("mac", [with_credits("Claude", 10, used=21)], [(1, "claude")], 1000), [1])
+        pc_claude = with_credits("Claude", 10, used=21)
+        self.assertEqual(self.enforce_on("pc", [pc_claude], [(2, "claude"), (3, "codex")], 1100), [2])
+        self.assertEqual(self.notes(pc_claude), [
+            "⛔ Credit cutoff $20 reached on another computer — stopped 1 claude process; cutoff cleared"])
+        self.assertEqual(self.enforce_on("pc", [with_credits("Claude", 10, used=30)], [(4, "claude")], 1200), [])
+        self.assertEqual(self.enforce_on("mac", [with_credits("Claude", 10, used=30)], [(5, "claude")], 1300), [])
+        cfg = w.load_config()
+        self.assertNotIn("credit_cutoff", cfg)
+        self.assertEqual(cfg["cutoff"], {"Claude": 90})  # the percentage cutoff is untouched
+
+    def test_handled_credit_cutoffs_stay_on_this_computer(self):
+        self.use_computer("mac")
+        w.set_cutoff("Codex", 10, key=w.CREDIT_CUTOFF_KEY)
+        self.enforce_on("mac", [with_credits("Codex", 1, left=9)], [], 1000)
+        shared = w._read_json(self.clouds[0] / "config.json")
+        self.assertEqual(shared["credit_cutoff_reached"], {"Codex": {"at": 1000, "cutoff": 10.0, "account": ""}})
+        self.assertNotIn("credit_cutoff_handled", shared)
+        self.assertIn("credit_cutoff_handled", w._read_json(self.local / "config.json"))
 
 
 class RealProcessTests(unittest.TestCase):

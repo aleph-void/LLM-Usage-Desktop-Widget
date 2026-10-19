@@ -306,6 +306,23 @@ def test_update_shows_the_logo_when_collapsed():
     assert strip.root.state() == "normal"  # still on the taskbar
 
 
+
+def test_update_collapsed_hides_when_taskbar_full():
+    strip = make_strip(root=FakeRoot("normal"), placed=(1, 2, 3, 4), spans=None, spans_at=0.0)
+    strip.tray.cfg["collapsed"] = True
+    strip._placement = lambda: (1, TASKBAR, 1650)
+    strip._free_spans = lambda *a: [(0, 10)]
+    strip._update()
+    assert strip.root.state() == "withdrawn"
+
+
+def test_update_collapsed_hidden_when_turned_off():
+    strip = make_strip(root=FakeRoot("normal"), placed=(1, 2, 3, 4))
+    strip.tray.cfg.update(collapsed=True, taskbar_text=False)
+    strip._placement = lambda: pytest.fail("should not look for the taskbar")
+    strip._update()
+    assert strip.root.state() == "withdrawn"
+
 def test_update_places_the_strip():
     positions = []
     strip = make_strip(

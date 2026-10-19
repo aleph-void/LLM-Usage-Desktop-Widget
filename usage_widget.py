@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 APP_NAME = "llm-usage-widget"
 USER_AGENT = f"llm-usage-widget/{__version__}"
@@ -95,6 +95,12 @@ class Credits:
         for value in (self.used, self.left, self.cap):
             if value is not None and not math.isfinite(value):
                 raise ValueError("credit amounts must be finite")
+
+    def percent_left(self) -> float | None:
+        """How much of the credits is left, 0-100, when the provider gives enough to tell (a spend and a cap)."""
+        if self.used is not None and self.cap:
+            return max(0.0, min(100.0, (self.cap - self.used) / self.cap * 100))
+        return None
 
 
 @dataclass
@@ -2297,15 +2303,17 @@ class Tray:
 
     def render(self):
         Gtk = self.Gtk
-        # Top bar: the fullest limit of each provider, e.g. "Claude 99%  Codex 13%".
+        # Top bar: the fullest limit of each provider, e.g. "Claude 99%  Codex 13%", or its credits left
+        # once that limit is full, e.g. "Claude 75% left".
         parts, worst = [], "normal"
         rank = {"normal": 0, "warning": 1, "critical": 2}
         for u in self.data:
-            top = top_limit(u)
+            top = headline(u)
             if top:
-                parts.append(f"{u.name} {top.percent:.0f}%")
-                if rank[top.level()] > rank[worst]:
-                    worst = top.level()
+                text, _, level = top
+                parts.append(f"{u.name} {text}")
+                if rank[level] > rank[worst]:
+                    worst = level
             elif u.summary:
                 parts.append(f"{u.name} {u.summary}")
             elif u.error:
@@ -2415,13 +2423,42 @@ def top_limit(u: ProviderUsage) -> Limit | None:
     return max(bars, key=lambda l: l.percent) if bars else None
 
 
+def credits_headline(credits: Credits) -> tuple[str, float | None, str]:
+    """(text, share used, level) of a provider's usage credits, for the top bar once its plan is used up.
+
+    "75% left" with the share spent, when the provider gives a cap to measure against; otherwise the
+    amount, "42 left" or "$3 used", with no share for a gauge to fill. Colored like the plan bars, by the
+    share spent: a balance that is gone is critical, one of unknown size is not.
+    """
+    pct = credits.percent_left()
+    if pct is not None:
+        return f"{pct:.0f}% left", 100 - pct, Limit("", 100 - pct).level()
+    if credits.left is not None:
+        return f"{credit_amount(credits.left, credits.unit)} left", None, "critical" if credits.left <= 0 else "normal"
+    return f"{credit_amount(credits.used or 0, credits.unit)} used", None, "normal"
+
+
+def headline(u: ProviderUsage) -> tuple[str, float, str] | None:
+    """(text, percent, level) the top bar and gauge show for a provider: its fullest limit, e.g. ("99%", 99.4,
+    "critical"), or, once that limit is at 100% and the provider reports usage credits, what is left of those,
+    e.g. ("75% left", 25, "normal"). The percent is the share used, what a gauge fills to.
+    """
+    top = top_limit(u)
+    if top is None:
+        return None
+    if top.percent >= 100 and u.credits is not None:
+        text, used, level = credits_headline(u.credits)
+        return text, top.percent if used is None else used, level
+    return f"{top.percent:.0f}%", top.percent, top.level()
+
+
 def summary_text(data: list[ProviderUsage]) -> str:
-    """e.g. "Claude 99%  Codex 13%" — the fullest limit of each provider."""
+    """e.g. "Claude 99%  Codex 13%" — the fullest limit of each provider, or its credits left once that is full."""
     parts = []
     for u in data:
-        top = top_limit(u)
+        top = headline(u)
         if top:
-            parts.append(f"{u.name} {top.percent:.0f}%")
+            parts.append(f"{u.name} {top[0]}")
         elif u.summary:
             parts.append(f"{u.name} {u.summary}")
         elif u.error:
@@ -2446,10 +2483,11 @@ def gauge_image(data: list[ProviderUsage], size: int = 64):
         x0 = gap + i * (width + gap)
         x1 = x0 + width
         draw.rounded_rectangle((x0, gap, x1, size - gap), radius=size // 12, fill=THEME["track"])
-        top = top_limit(by_name[name]) if name in by_name else None
-        if top and top.percent > 0:
-            height = (size - 2 * gap) * min(100, top.percent) / 100
-            draw.rectangle((x0, size - gap - height, x1, size - gap), fill=THEME[top.level()])
+        top = headline(by_name[name]) if name in by_name else None
+        if top and top[1] > 0:
+            _, percent, level = top
+            height = (size - 2 * gap) * min(100, percent) / 100
+            draw.rectangle((x0, size - gap - height, x1, size - gap), fill=THEME[level])
     return img
 
 
@@ -2716,12 +2754,14 @@ class TaskbarStrip:
     # -- drawing -------------------------------------------------------------
 
     def _parts(self) -> list[tuple[str, str, str]]:
-        """(provider, value, level) for each provider, e.g. ("Claude", "99%", "critical")."""
+        """(provider, value, level) for each provider, e.g. ("Claude", "99%", "critical") or, once its plan
+        is used up and it has usage credits, ("Claude", "75% left", "normal")."""
         parts = []
         for u in self.tray.data:
-            top = top_limit(u)
+            top = headline(u)
             if top:
-                parts.append((u.name, f"{top.percent:.0f}%", top.level()))
+                text, _, level = top
+                parts.append((u.name, text, level))
             elif u.summary:
                 parts.append((u.name, u.summary, "normal"))
             elif u.error:

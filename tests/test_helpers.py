@@ -211,6 +211,70 @@ def test_summary_text():
     assert w.summary_text([]) == ""
 
 
+# -- headline: credits left once the plan is used up ----------------------------
+
+def full_with_credits(**credits):
+    return w.ProviderUsage("Claude", limits=[w.Limit("s", 100), w.Limit("w", 40)], credits=w.Credits(**credits))
+
+
+@pytest.mark.parametrize("credits, expected", [
+    (dict(used=12.5, cap=50), 75.0), (dict(used=0, cap=50), 100.0), (dict(used=50, cap=50), 0.0),
+    (dict(used=60, cap=50), 0.0),  # past the cap: nothing left, never negative
+    (dict(used=3), None), (dict(used=3, cap=0), None), (dict(left=42), None), (dict(), None),
+])
+def test_credits_percent_left(credits, expected):
+    assert w.Credits(**credits).percent_left() == expected
+
+
+@pytest.mark.parametrize("credits, expected", [
+    (dict(used=12.5, cap=50, unit="$"), ("75% left", 25.0, "normal")),
+    (dict(used=40, cap=50, unit="$"), ("20% left", 80.0, "warning")),
+    (dict(used=47.5, cap=50, unit="$"), ("5% left", 95.0, "critical")),
+    (dict(used=50, cap=50, unit="$"), ("0% left", 100.0, "critical")),
+    (dict(left=42), ("42 left", None, "normal")),
+    (dict(left=7.5), ("7.5 left", None, "normal")),
+    (dict(left=0), ("0 left", None, "critical")),
+    (dict(used=3, unit="$"), ("$3 used", None, "normal")),  # extra usage without a cap
+    (dict(used=12.5, unit="$"), ("$12.50 used", None, "normal")),
+])
+def test_credits_headline(credits, expected):
+    assert w.credits_headline(w.Credits(**credits)) == expected
+
+
+def test_headline_is_the_fullest_limit_until_it_is_full():
+    u = w.ProviderUsage("Claude", limits=[w.Limit("s", 99.4), w.Limit("w", 40)],
+                        credits=w.Credits(used=12.5, cap=50, unit="$"))
+    assert w.headline(u) == ("99%", 99.4, "critical")
+    u.limits[0].percent = 100
+    assert w.headline(u) == ("75% left", 25.0, "normal")
+    u.limits[0].percent = 250  # overfull plan: still the credits
+    assert w.headline(u) == ("75% left", 25.0, "normal")
+
+
+def test_headline_full_without_credits_stays_at_100():
+    u = w.ProviderUsage("Claude", limits=[w.Limit("s", 100)])
+    assert w.headline(u) == ("100%", 100, "critical")
+
+
+def test_headline_credits_without_a_cap_keep_the_plan_percent_for_the_gauge():
+    assert w.headline(full_with_credits(left=42)) == ("42 left", 100, "normal")
+    assert w.headline(full_with_credits(left=0)) == ("0 left", 100, "critical")
+
+
+def test_headline_none_without_bars():
+    assert w.headline(w.ProviderUsage("Codex", credits=w.Credits(left=42))) is None
+    assert w.headline(w.ProviderUsage("Bedrock", limits=[w.Limit("spend", None)])) is None
+
+
+def test_summary_text_switches_to_credits_left():
+    data = [
+        full_with_credits(used=12.5, cap=50, unit="$"),
+        w.ProviderUsage("Codex", limits=[w.Limit("s", 100)], credits=w.Credits(left=42)),
+        w.ProviderUsage("Codex", limits=[w.Limit("s", 100)]),
+    ]
+    assert w.summary_text(data) == "Claude 75% left  Codex 42 left  Codex 100%"
+
+
 def test_usage_pages():
     assert w.usage_pages([]) == {"Claude": w.USAGE_PAGES["Claude"], "Codex": w.USAGE_PAGES["Codex"]}
     assert list(w.usage_pages([w.ProviderUsage("Codex"), w.ProviderUsage("Bedrock")])) == ["Codex", "Bedrock"]

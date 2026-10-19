@@ -48,6 +48,14 @@ def test_parts():
                               ("Bedrock", "$3.00", "normal"), ("Broken", "–", "muted")]
 
 
+def test_parts_switch_to_credits_left_once_the_plan_is_full():
+    strip = make_strip([
+        w.ProviderUsage("Claude", limits=[w.Limit("s", 100)], credits=w.Credits(used=45, cap=50, unit="$")),
+        w.ProviderUsage("Codex", limits=[w.Limit("s", 100)], credits=w.Credits(left=42)),
+    ])
+    assert strip._parts() == [("Claude", "10% left", "critical"), ("Codex", "42 left", "normal")]
+
+
 def test_parts_placeholder():
     assert make_strip()._parts() == [("LLM usage", "…", "muted")]
 

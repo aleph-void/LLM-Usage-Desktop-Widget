@@ -186,13 +186,17 @@ def http_json(url: str, headers: dict[str, str], timeout: float = 20, body: dict
                 raise RuntimeError(f"HTTP {e.code}") from e
             raise HTTPStatusError(e.code, _error_detail(e)) from e
         finally:
-            e.close()
+            # Python 3.9 leaves the file wrapper uninitialized when there is no body.
+            if e.fp is not None:
+                e.close()
     except urllib.error.URLError as e:
         raise RuntimeError(f"network: {e.reason}") from e
 
 
 def _error_detail(e: urllib.error.HTTPError) -> str:
     """The message in a Google/Azure-style error body ({"error": {"message": ...}}), shortened."""
+    if e.fp is None:
+        return ""
     try:
         err = _read_response(e, 64 * 1024).get("error")
     except (OSError, ValueError, AttributeError):

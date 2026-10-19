@@ -28,3 +28,6 @@ Thumbs.db
 # Test coverage
 .coverage
 .pytest_cache/
+
+# Claude Code agent worktrees
+.claude/worktrees/

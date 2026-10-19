@@ -33,6 +33,12 @@ def test_build_scripts_read_the_version_the_same_way():
     assert "'^__version__ = \"(.*)\"'" in (ROOT / "packaging/windows/build.ps1").read_text(encoding="utf-8")
 
 
+def test_windows_uninstall_switch_looks_up_the_installers_app_id():
+    iss = (ROOT / "packaging/windows/installer.iss").read_text(encoding="utf-8")
+    app_id = re.search(r"^AppId=\{(\{[0-9A-F-]+\})$", iss, re.MULTILINE).group(1)
+    assert f'#define AppIdGuid "{app_id}"' in iss
+
+
 @pytest.mark.parametrize("level", list(w.ICON_COLORS))
 def test_top_bar_icons_are_valid_svg(level):
     c1, c2, c3 = w.ICON_COLORS[level]

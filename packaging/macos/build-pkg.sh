@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build dist/LLM-Usage-Widget-<version>-macos-<arch>.pkg (run on macOS).
+# Build dist/LLM-Usage-Widget-<version>-macos-<arch>.dmg (run on macOS).
 #
 # Freezes the app with PyInstaller into "LLM Usage.app" (menu-bar only, no Dock
-# icon) and wraps it in an installer that puts it in /Applications and registers
+# icon) and wraps it in an installer pkg that puts it in /Applications and registers
 # a LaunchAgent so it starts for every user at login.
 #
-# Also builds dist/LLM-Usage-Widget-<version>-macos-uninstall.pkg, a payload-free
-# package that runs packaging/macos/uninstall.sh (also bundled in the app's Resources).
+# The disk image holds that pkg and an uninstaller pkg: a payload-free package that
+# runs packaging/macos/uninstall.sh (also bundled in the app's Resources).
 #
 # Needs: python3 with `pip install pyinstaller -r requirements.txt`.
 #
@@ -14,7 +14,8 @@
 #   CODESIGN_IDENTITY        "Developer ID Application: ..." (hardened runtime + timestamp)
 #   INSTALLER_SIGN_IDENTITY  "Developer ID Installer: ..."
 #   SIGNING_KEYCHAIN         keychain holding those identities
-# Notarize and staple the resulting pkg afterwards (see .github/workflows/build-installers.yml).
+# The disk image is signed with CODESIGN_IDENTITY. Notarize and staple it afterwards
+# (see .github/workflows/build-installers.yml); that covers the pkgs inside it too.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -113,13 +114,15 @@ chmod 0755 "$BUILD/scripts/preinstall" "$BUILD/scripts/postinstall"
 pkgbuild --analyze --root "$BUILD/root" "$BUILD/component.plist" >/dev/null
 plutil -replace 0.BundleIsRelocatable -bool NO "$BUILD/component.plist"
 
-mkdir -p "$ROOT/dist"
-OUT="$ROOT/dist/LLM-Usage-Widget-$VERSION-macos-$ARCH.pkg"
+# ---- the two pkgs, under the names they have in the disk image
+DMG_ROOT="$BUILD/dmg"
+mkdir -p "$DMG_ROOT"
 SIGN_ARGS=()
 if [ -n "${INSTALLER_SIGN_IDENTITY:-}" ]; then
     SIGN_ARGS=(--sign "$INSTALLER_SIGN_IDENTITY")
     [ -n "${SIGNING_KEYCHAIN:-}" ] && SIGN_ARGS+=(--keychain "$SIGNING_KEYCHAIN")
 fi
+INSTALL_PKG="$DMG_ROOT/Install LLM Usage Widget.pkg"
 pkgbuild --root "$BUILD/root" \
     --component-plist "$BUILD/component.plist" \
     --scripts "$BUILD/scripts" \
@@ -127,19 +130,32 @@ pkgbuild --root "$BUILD/root" \
     --version "$VERSION" \
     --install-location / \
     ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} \
-    "$OUT"
-[ -n "${INSTALLER_SIGN_IDENTITY:-}" ] && pkgutil --check-signature "$OUT" >&2
-echo "$OUT"
+    "$INSTALL_PKG"
 
-# ---- uninstaller: no payload (so no receipt), just the uninstall script as postinstall
+# Uninstaller: no payload (so no receipt), just the uninstall script as postinstall.
 mkdir -p "$BUILD/uninstall-scripts"
 install -m 0755 "$ROOT/packaging/macos/uninstall.sh" "$BUILD/uninstall-scripts/postinstall"
-UNINSTALL_OUT="$ROOT/dist/LLM-Usage-Widget-$VERSION-macos-uninstall.pkg"
+UNINSTALL_PKG="$DMG_ROOT/Uninstall LLM Usage Widget.pkg"
 pkgbuild --nopayload \
     --scripts "$BUILD/uninstall-scripts" \
     --identifier "$BUNDLE_ID.uninstall" \
     --version "$VERSION" \
     ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} \
-    "$UNINSTALL_OUT"
-[ -n "${INSTALLER_SIGN_IDENTITY:-}" ] && pkgutil --check-signature "$UNINSTALL_OUT" >&2
-echo "$UNINSTALL_OUT"
+    "$UNINSTALL_PKG"
+if [ -n "${INSTALLER_SIGN_IDENTITY:-}" ]; then
+    pkgutil --check-signature "$INSTALL_PKG" >&2
+    pkgutil --check-signature "$UNINSTALL_PKG" >&2
+fi
+
+# ---- disk image
+mkdir -p "$ROOT/dist"
+OUT="$ROOT/dist/LLM-Usage-Widget-$VERSION-macos-$ARCH.dmg"
+hdiutil create -volname "LLM Usage Widget $VERSION" -srcfolder "$DMG_ROOT" \
+    -fs HFS+ -format UDZO -ov "$OUT" >/dev/null
+if [ -n "${CODESIGN_IDENTITY:-}" ] && [ "$CODESIGN_IDENTITY" != "-" ]; then
+    DMG_SIGN=(codesign --force --timestamp --sign "$CODESIGN_IDENTITY")
+    [ -n "${SIGNING_KEYCHAIN:-}" ] && DMG_SIGN+=(--keychain "$SIGNING_KEYCHAIN")
+    "${DMG_SIGN[@]}" "$OUT"
+    codesign --verify --strict --verbose=2 "$OUT"
+fi
+echo "$OUT"

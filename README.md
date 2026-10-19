@@ -48,10 +48,10 @@ Download from the GitHub release (built by `.github/workflows/build-installers.y
 | OS | File | Notes |
 |---|---|---|
 | Linux (Debian/Ubuntu) | `llm-usage-widget_<ver>_all.deb` | `sudo apt install ./llm-usage-widget_*.deb`. Starts right away for every logged-in user, and at login via `/etc/xdg/autostart`. |
-| macOS | `LLM-Usage-Widget-<ver>-macos-arm64.pkg` (Apple Silicon) or `-x86_64.pkg` (Intel) | Installs `/Applications/LLM Usage.app` plus a login LaunchAgent. Release builds are signed with a Developer ID and notarized by Apple. |
-| Windows | `LLM-Usage-Widget-<ver>-windows-setup.exe` | Per-user install, no admin rights needed. "Start automatically when I sign in" is ticked by default. The build is unsigned, so SmartScreen may warn: click **More info → Run anyway**. Uninstall from *Settings → Apps*, the *Uninstall LLM Usage Widget* Start Menu entry, or by running `LLM-Usage-Widget-<ver>-windows-uninstall.exe` from the same release (add `/VERYSILENT` to skip the prompts). Settings in `%APPDATA%\llm-usage-widget` are kept. |
+| macOS | `LLM-Usage-Widget-<ver>-macos-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel) | Open it and run *Install LLM Usage Widget.pkg*, which installs `/Applications/LLM Usage.app` plus a login LaunchAgent. Release builds are signed with a Developer ID and notarized by Apple. |
+| Windows | `LLM-Usage-Widget-<ver>-windows-setup.exe` | Per-user install, no admin rights needed. "Start automatically when I sign in" is ticked by default. The build is unsigned, so SmartScreen may warn: click **More info → Run anyway**. Uninstall from *Settings → Apps*, the *Uninstall LLM Usage Widget* Start Menu entry, or by running the setup `.exe` with `/uninstall` (add `/VERYSILENT` to skip the prompts). Settings in `%APPDATA%\llm-usage-widget` are kept. |
 
-To uninstall the macOS package, open `LLM-Usage-Widget-<ver>-macos-uninstall.pkg` from the same release
+To uninstall on macOS, run *Uninstall LLM Usage Widget.pkg* from the same disk image
 (it asks for an administrator password), or run the copy of the uninstaller inside the app:
 
 ```sh
@@ -194,20 +194,21 @@ by hand to download them as build artifacts. To build locally on each OS:
 ```sh
 packaging/linux/build-deb.sh                                   # Linux → dist/*.deb
 python3 -m pip install pyinstaller -r requirements.txt
-packaging/macos/build-pkg.sh                                   # macOS → dist/*.pkg
+packaging/macos/build-pkg.sh                                   # macOS → dist/*.dmg
 powershell -File packaging\windows\build.ps1                   # Windows → dist\*-setup.exe (needs Inno Setup 6)
 ```
 
 To sign the macOS build locally, set `CODESIGN_IDENTITY` (a "Developer ID Application" identity) and
 `INSTALLER_SIGN_IDENTITY` ("Developer ID Installer"). The app is signed with the hardened runtime and a
-secure timestamp, which is what notarization requires. Then notarize and staple the pkg:
+secure timestamp, which is what notarization requires, and the disk image is signed with the same
+identity. Then notarize and staple the disk image, which covers the pkgs inside it:
 
 ```sh
-xcrun notarytool submit dist/*.pkg --keychain-profile <profile> --wait
-xcrun stapler staple dist/*.pkg
+xcrun notarytool submit dist/*.dmg --keychain-profile <profile> --wait
+xcrun stapler staple dist/*.dmg
 ```
 
-In CI, the macOS job signs, notarizes and staples the pkg when these repository secrets are set. A tag
+In CI, the macOS job signs, notarizes and staples the disk image when these repository secrets are set. A tag
 release fails without them:
 
 | Secret | Contents |
@@ -248,7 +249,7 @@ downloaded installer to check it yourself:
 powershell -File packaging\windows\verify-signature.ps1 .\LLM-Usage-Widget-<ver>-windows-setup.exe
 ```
 
-The release's `-windows-uninstall.exe` is signed the same way. The uninstaller that Inno Setup
+`/uninstall` runs from the same signed setup `.exe`. The uninstaller that Inno Setup
 writes into the install folder at install time is not signed. It runs without elevation
 (the install is per-user), so Windows doesn't show a publisher prompt for it.
 

@@ -556,8 +556,9 @@ def fetch_claude() -> ProviderUsage:
 
     extra = data.get("extra_usage") or {}
     if isinstance(extra, dict) and extra.get("is_enabled"):
-        cap = _amount(extra.get("monthly_limit")) or None
-        used = _amount(extra.get("used_credits"))
+        # Both amounts come in cents.
+        cap = _cents_to_dollars(_amount(extra.get("monthly_limit"))) or None
+        used = _cents_to_dollars(_amount(extra.get("used_credits")))
         if used is not None:  # extra usage is on, so a credit cutoff can be set, even before any is spent
             usage.credits = Credits(used=used, cap=cap, unit="$", what="extra usage")
         if used:
@@ -565,6 +566,10 @@ def fetch_claude() -> ProviderUsage:
             label = f"Extra usage ${used:.2f}" + (f" / ${cap:.0f}" if cap else "")
             usage.limits.append(Limit(label, pct))
     return usage
+
+
+def _cents_to_dollars(cents: float | None) -> float | None:
+    return None if cents is None else cents / 100
 
 
 def _amount(value) -> float | None:

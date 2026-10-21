@@ -237,7 +237,7 @@ def test_legacy_shape(logged_in, fake_http):
 
 def test_extra_usage_with_cap(logged_in, fake_http):
     fake_http.responses[USAGE_URL] = {
-        "extra_usage": {"is_enabled": True, "used_credits": 12.5, "monthly_limit": 50, "utilization": 25}}
+        "extra_usage": {"is_enabled": True, "used_credits": 1250, "monthly_limit": 5000, "utilization": 25}}
     usage = w.fetch_claude()
     (lim,) = usage.limits
     assert (lim.label, lim.percent) == ("Extra usage $12.50 / $50", 25.0)
@@ -245,7 +245,7 @@ def test_extra_usage_with_cap(logged_in, fake_http):
 
 
 def test_extra_usage_without_cap(logged_in, fake_http):
-    fake_http.responses[USAGE_URL] = {"extra_usage": {"is_enabled": True, "used_credits": 3}}
+    fake_http.responses[USAGE_URL] = {"extra_usage": {"is_enabled": True, "used_credits": 300}}
     usage = w.fetch_claude()
     (lim,) = usage.limits
     assert (lim.label, lim.percent) == ("Extra usage $3.00", 0.0)
@@ -264,6 +264,14 @@ def test_extra_usage_enabled_but_unused_still_counts_as_credits(logged_in, fake_
     usage = w.fetch_claude()
     assert usage.limits == []
     assert usage.credits == w.Credits(used=0.0, cap=None, unit="$", what="extra usage")
+
+
+def test_extra_usage_amounts_are_cents(logged_in, fake_http):
+    """The API reports extra usage in cents: 6155 is $61.55, not $6155."""
+    fake_http.responses[USAGE_URL] = {"extra_usage": {"is_enabled": True, "used_credits": 6155}}
+    usage = w.fetch_claude()
+    assert usage.credits.used == 61.55
+    assert w.credits_headline(usage.credits)[0] == "$61.55 used"
 
 
 @pytest.mark.parametrize("extra", [None, {}, "garbage", {"is_enabled": False, "used_credits": 5},

@@ -627,6 +627,7 @@ def test_desktop_tray_windows_menu_on_any_click(pystray, monkeypatch):
         def __init__(self, tray):
             self.closed = False
             self.focus_checks = 0
+            self.suppressed = False
 
         def close(self):
             self.closed = True
@@ -653,6 +654,9 @@ def test_desktop_tray_windows_menu_on_any_click(pystray, monkeypatch):
     assert posted == [(99, 0x4E, 0, 0x202)]
     texts = tray._menu().texts()
     assert "Show usage on the taskbar" in texts
+    assert not [t for t in texts if "hidden" in t]
+    tray.strip.suppressed = True  # the taskbar is drawn over the strip: say so instead of vanishing
+    assert "    ⚠ hidden — Windows is holding the taskbar above it" in tray._menu().texts()
     tray._quit()
     assert tray.strip.closed and not tray.icon.stopped  # the strip's loop stops the icon
 

@@ -99,6 +99,12 @@ no API for text in the taskbar, so this is a small always-on-top window that fol
 aside for full-screen apps and an auto-hidden or vertical taskbar. Turn it off with *Show usage on the taskbar*
 in the menu. The tray icon may be tucked into the overflow (`^`) menu; drag it onto the taskbar to keep it visible.
 
+After one of its own flyouts has been open — Start, Search, the Widgets board — Windows 11 sometimes leaves the
+taskbar in a window layer above every ordinary window, and no program without special privileges can draw over
+that. The numbers then disappear from the taskbar until the shell puts it back (restarting Explorer does, as does
+signing out). The menu says so under *Show usage on the taskbar*, and the tray icon and its tooltip still have the
+numbers meanwhile.
+
 To keep the numbers out of sight, choose *Collapse to logo* in the menu: the top bar, menu bar or taskbar then
 shows only the Aleph Void logo, ℵ₀, as a plain line icon like the system's own (on Windows the taskbar text
 becomes the logo, and so does the tray icon). The numbers are still in the menu; choose it again to bring them back.

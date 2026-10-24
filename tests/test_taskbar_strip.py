@@ -30,6 +30,8 @@ def make_strip(data=None, **attrs):
     strip.uia = None
     strip.hwnd = 500
     strip.ctypes = ctypes
+    strip.wintypes = types.SimpleNamespace(POINT=lambda x, y: (x, y))
+    strip.behind, strip.behind_until = 0, 0.0
     strip.__dict__.update(attrs)
     return strip
 
@@ -160,9 +162,14 @@ def test_free_spans_buttons_reaching_the_tray():
 class FakeUser32:
     SHELL_PID = 1234  # explorer.exe, which owns the taskbar (hwnd 1)
 
-    def __init__(self, visible=True, screen=(1920, 1080), foreground=0, fg_class="Notepad", fg_pid=99):
+    def __init__(self, visible=True, screen=(1920, 1080), foreground=0, fg_class="Notepad", fg_pid=99,
+                 on_top=None):
         self.visible, self.screen, self.foreground, self.fg_class = visible, screen, foreground, fg_class
         self.fg_pid = fg_pid
+        # The window on top of the taskbar at each probed point; by default whatever is in
+        # front, as a full-screen app covering the taskbar would be. One hwnd, or one per point.
+        self.on_top = on_top
+        self.probed = []
         self.calls = []
 
     def FindWindowW(self, cls, name):
@@ -188,6 +195,14 @@ class FakeUser32:
         if pid is not None:
             pid.value = self.SHELL_PID if hwnd == 1 else self.fg_pid
         return 42  # the thread
+
+    def WindowFromPoint(self, point):
+        self.probed.append(point)
+        on_top = self.foreground if self.on_top is None else self.on_top
+        return on_top[len(self.probed) - 1] if isinstance(on_top, list) else on_top
+
+    def GetAncestor(self, hwnd, flag):
+        return hwnd
 
     def AttachThreadInput(self, me, other, attach):
         self.calls.append(("attach" if attach else "detach", other))
@@ -240,8 +255,75 @@ def test_placement_hidden(rects, user32):
     (7, None, "X", 99, False),  # window vanished
 ])
 def test_fullscreen_app(foreground, rect, cls, pid, expected):
-    strip = placement_strip({7: rect} if rect else {}, foreground=foreground, fg_class=cls, fg_pid=pid)
+    strip = placement_strip({1: TASKBAR, **({7: rect} if rect else {})},
+                            foreground=foreground, fg_class=cls, fg_pid=pid)
     assert strip._fullscreen_app(1) is expected
+
+
+@pytest.mark.parametrize("on_top, expected", [
+    (1, False),  # the Start menu, Search, the Widgets board: the taskbar stays on top of them
+    (500, False),  # only the strip's own window, which says nothing about what is under it
+    (0, False),  # no window there at all
+    ([500, 1, 7], False),  # the taskbar on top at one of the points is enough
+    ([500, 7, 7], True),  # a full-screen app everywhere the taskbar can be seen
+    (7, True),
+])
+def test_fullscreen_app_needs_the_taskbar_covered(on_top, expected):
+    # A screen-sized foreground window is only a full-screen app when it really covers the
+    # taskbar: Windows' own screen-sized windows don't, and may keep the focus once dismissed.
+    strip = placement_strip({1: TASKBAR, 7: (0, 0, 1920, 1080)}, foreground=7, on_top=on_top)
+    assert strip._fullscreen_app(1) is expected
+    left, top, right, bottom = TASKBAR  # it asks about points along the taskbar, nowhere else
+    assert strip.user32.probed and all(left <= x <= right and top <= y <= bottom
+                                       for x, y in strip.user32.probed)
+
+
+def test_placement_with_the_start_menu_open():
+    # The Start menu is screen-sized but leaves the taskbar visible, so the strip stays put.
+    strip = placement_strip({1: TASKBAR, 2: (1650, 1040, 1920, 1088), 7: (0, 0, 1920, 1080)},
+                            foreground=7, fg_class="Windows.UI.Core.CoreWindow", on_top=1)
+    assert strip._placement() == (1, TASKBAR, 1650)
+
+
+# -- _behind_taskbar / _give_up_if_behind ----------------------------------------
+
+def behind_strip(on_top, placed=(100, 40, 300, 1044)):
+    strip = placement_strip({1: TASKBAR}, on_top=on_top)
+    strip.placed, strip.behind, strip.behind_until = placed, 0, 0.0
+    return strip
+
+
+@pytest.mark.parametrize("on_top, placed, expected", [
+    (1, (100, 40, 300, 1044), True),  # the taskbar is drawn over the strip
+    (500, (100, 40, 300, 1044), False),  # the strip itself
+    (7, (100, 40, 300, 1044), False),  # an ordinary window overlapping it is not this problem
+    (1, None, False),  # nowhere yet
+])
+def test_behind_taskbar(on_top, placed, expected):
+    strip = behind_strip(on_top, placed)
+    assert strip._behind_taskbar(1) is expected
+    assert strip.user32.probed == ([(350, 1064)] if placed else [])  # the middle of the strip
+
+
+def test_gives_up_only_after_the_taskbar_has_covered_it_for_a_while(monkeypatch):
+    # A flyout of the shell's own covers the strip for a moment; it waits that out.
+    monkeypatch.setattr(w.time, "monotonic", lambda: 1000.0)
+    strip = behind_strip(1)
+    assert [strip._give_up_if_behind(1) for _ in range(strip.BEHIND_TICKS - 1)] == [False] * 19
+    assert not strip.suppressed
+    assert strip._give_up_if_behind(1) is True  # it has been covered long enough: stop trying
+    assert strip.suppressed and strip.behind_until == 1000.0 + strip.BEHIND_RETRY
+    assert strip.behind == 0
+    monkeypatch.setattr(w.time, "monotonic", lambda: 1000.0 + strip.BEHIND_RETRY)
+    assert not strip.suppressed  # the wait is up, so the next tick shows it and looks again
+
+
+def test_being_behind_the_taskbar_is_counted_only_while_it_lasts():
+    strip = behind_strip(1)
+    assert strip._give_up_if_behind(1) is False and strip.behind == 1
+    strip.user32.on_top = 500  # back on top
+    assert strip._give_up_if_behind(1) is False and strip.behind == 0
+    assert not strip.suppressed
 
 
 # -- take_focus_from_taskbar -----------------------------------------------------
@@ -343,7 +425,8 @@ def test_update_shows_the_logo_when_collapsed():
         [w.ProviderUsage("Claude", limits=[w.Limit("s", 50)])],
         root=FakeRoot(), placed=None, spans=None, spans_at=0.0,
         inner=types.SimpleNamespace(winfo_reqwidth=lambda: 24),
-        user32=types.SimpleNamespace(SetWindowPos=lambda *a: None),
+        user32=types.SimpleNamespace(SetWindowPos=lambda *a: None, WindowFromPoint=lambda pt: 0,
+                                     GetAncestor=lambda hwnd, flag: 0),
     )
     strip.tray.cfg["collapsed"] = True
     strip._placement = lambda: (1, TASKBAR, 1650)
@@ -378,7 +461,8 @@ def test_update_places_the_strip():
         [w.ProviderUsage("Claude", limits=[w.Limit("s", 50)])],
         root=FakeRoot(), placed=None, spans=None, spans_at=0.0,
         inner=types.SimpleNamespace(winfo_reqwidth=lambda: 120),
-        user32=types.SimpleNamespace(SetWindowPos=lambda *a: positions.append(a)),
+        user32=types.SimpleNamespace(SetWindowPos=lambda *a: positions.append(a),
+                                     WindowFromPoint=lambda pt: 0, GetAncestor=lambda hwnd, flag: 0),
     )
     strip._placement = lambda: (1, TASKBAR, 1650)
     drawn = []
@@ -392,6 +476,29 @@ def test_update_places_the_strip():
     assert positions == [(500, -1, 1650 - margin - 120, 1040 + margin, 120, 48 - 2 * margin, 0x0010)]
     strip._update()  # same place: geometry not set again
     assert len(strip.root.geometries) == 1
+
+
+def test_update_gives_up_while_the_taskbar_is_drawn_over_the_strip():
+    # Windows 11 sometimes leaves the taskbar above every ordinary window after one of its
+    # flyouts: the strip can't be raised over it, so it withdraws and leaves it to the tray icon.
+    strip = make_strip(
+        [w.ProviderUsage("Claude", limits=[w.Limit("s", 50)])],
+        root=FakeRoot(), placed=None, spans=None, spans_at=0.0,
+        inner=types.SimpleNamespace(winfo_reqwidth=lambda: 120),
+        user32=types.SimpleNamespace(SetWindowPos=lambda *a: None, WindowFromPoint=lambda pt: 1,
+                                     GetAncestor=lambda hwnd, flag: 1),  # the taskbar, over the strip
+    )
+    strip._placement = lambda: (1, TASKBAR, 1650)
+    strip._draw = lambda bg, parts, layout: None
+    strip._taskbar_color = lambda x, y: "#202020"
+    for _ in range(strip.BEHIND_TICKS - 1):
+        strip._update()
+    assert strip.root.state() == "normal"  # a flyout covers it for a moment: keep trying
+    strip._update()
+    assert strip.root.state() == "withdrawn" and strip.suppressed
+    strip._placement = lambda: pytest.fail("should not look for the taskbar while it has given up")
+    strip._update()
+    assert strip.root.state() == "withdrawn"
 
 
 def test_update_hides_when_taskbar_full():

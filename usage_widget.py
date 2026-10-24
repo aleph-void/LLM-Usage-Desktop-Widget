@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 APP_NAME = "llm-usage-widget"
 USER_AGENT = f"llm-usage-widget/{__version__}"
@@ -2587,6 +2587,8 @@ class TaskbarStrip:
             (u.GetForegroundWindow, [], W.HWND),
             (u.GetClassNameW, [W.HWND, W.LPWSTR, ctypes.c_int], ctypes.c_int),
             (u.GetWindowThreadProcessId, [W.HWND, ctypes.POINTER(W.DWORD)], W.DWORD),
+            (u.WindowFromPoint, [W.POINT], W.HWND),
+            (u.GetAncestor, [W.HWND, W.UINT], W.HWND),
             (u.SetForegroundWindow, [W.HWND], W.BOOL),
             (u.AttachThreadInput, [W.DWORD, W.DWORD, W.BOOL], W.BOOL),
             (u.GetSystemMetrics, [ctypes.c_int], ctypes.c_int),
@@ -2603,6 +2605,7 @@ class TaskbarStrip:
         self.placed = None
         self.uia = self._init_uia()
         self.spans, self.spans_at = None, 0.0
+        self.behind, self.behind_until = 0, 0.0  # ticks spent under the taskbar, and when to try again
 
         root = self.root = tk.Tk()
         root.withdraw()
@@ -2704,6 +2707,68 @@ class TaskbarStrip:
         self.user32.GetWindowThreadProcessId(taskbar, shell_pid)
         return bool(pid.value) and pid.value == shell_pid.value
 
+    GA_ROOT = 2  # GetAncestor: the top-level window that the window at a point belongs to
+
+    def _taskbar_covered(self, taskbar) -> bool:
+        """Whether another window is drawn over the taskbar, as a full-screen app is.
+
+        A window's rectangle alone cannot tell one from Windows' own screen-sized windows
+        — the Start menu, Search, the Widgets board, the touch keyboard — which leave the
+        taskbar on top of them and can stay the foreground window after they are dismissed.
+        What decides it is whether the taskbar can still be seen, so ask what is on top of
+        it at a few points along it.
+        """
+        u = self.user32
+        tb = self._rect(taskbar)
+        if not tb:
+            return False
+        left, top, right, bottom = tb
+        y = (top + bottom) // 2
+        covered = False
+        for x in (left + 2, (left + right) // 2, right - 2):
+            hwnd = u.GetAncestor(u.WindowFromPoint(self.wintypes.POINT(x, y)), self.GA_ROOT)
+            if not hwnd or hwnd == self.hwnd:
+                continue  # nothing there, or the strip itself, which says nothing about the taskbar
+            if hwnd == taskbar or self._is_shell(hwnd, taskbar):
+                return False  # the taskbar is still on top here, so nothing is covering it
+            covered = True
+        return covered
+
+    BEHIND_TICKS = 20  # how long the taskbar may cover the strip (at TICK_MS) before it gives up
+    BEHIND_RETRY = 5.0  # seconds before trying again, which costs nothing while it is covered anyway
+
+    def _behind_taskbar(self, taskbar) -> bool:
+        """Whether the taskbar is drawn over the strip where the strip is placed."""
+        if not self.placed:
+            return False
+        w, h, x, y = self.placed
+        pt = self.wintypes.POINT(x + w // 2, y + h // 2)
+        return self.user32.GetAncestor(self.user32.WindowFromPoint(pt), self.GA_ROOT) == taskbar
+
+    @property
+    def suppressed(self) -> bool:
+        """Whether the strip has given up for now because the taskbar is drawn over it."""
+        return time.monotonic() < self.behind_until
+
+    def _give_up_if_behind(self, taskbar) -> bool:
+        """Whether the taskbar has covered the strip for so long that it should stop trying.
+
+        After one of its flyouts has been open, Windows 11 sometimes leaves the taskbar in a
+        z-order band above every ordinary window. Nothing an unprivileged process can do puts
+        a window above that — not SetWindowPos in any form, not SetWindowBand, which is denied,
+        nor SetParent into the taskbar, which is refused — so rather than sit there invisible,
+        the strip withdraws and the tray icon and its tooltip carry the numbers until the shell
+        puts the taskbar back.
+        """
+        if not self._behind_taskbar(taskbar):
+            self.behind = 0
+            return False
+        self.behind += 1
+        if self.behind < self.BEHIND_TICKS:
+            return False  # a flyout of the shell's own covers it for a moment; wait it out
+        self.behind, self.behind_until = 0, time.monotonic() + self.BEHIND_RETRY
+        return True
+
     def take_focus_from_taskbar(self) -> bool:
         """If the taskbar has the focus, move it to the strip; True if it did (any thread).
 
@@ -2738,7 +2803,10 @@ class TaskbarStrip:
             # the foreground window whenever the taskbar has the focus.
             return False
         r = self._rect(fg)
-        return bool(r) and r[0] <= 0 and r[1] <= 0 and r[2] >= u.GetSystemMetrics(0) and r[3] >= u.GetSystemMetrics(1)
+        if not (r and r[0] <= 0 and r[1] <= 0 and r[2] >= u.GetSystemMetrics(0)
+                and r[3] >= u.GetSystemMetrics(1)):
+            return False
+        return self._taskbar_covered(taskbar)
 
     def _taskbar_color(self, x: int, y: int) -> str:
         """The taskbar's own color just outside the strip, so the strip blends in."""
@@ -2792,7 +2860,7 @@ class TaskbarStrip:
         key = (bg, tuple(parts), layout)
         if key == self.shown_key:
             return
-        self.shown_key, self.bg = key, bg
+        self.bg = bg
         tk = self.tk
         r, g, b = (int(bg[i:i + 2], 16) for i in (1, 3, 5))
         light = 0.299 * r + 0.587 * g + 0.114 * b > 140
@@ -2824,6 +2892,9 @@ class TaskbarStrip:
         for w in [self.frame, self.inner, *self.inner.winfo_children()]:
             w.bind("<ButtonRelease-1>", self._click)
             w.bind("<ButtonRelease-3>", self._click)
+        # Last, so that a draw that failed part way is tried again instead of being
+        # taken for what is on the taskbar, which would leave the strip empty for good.
+        self.shown_key = key
 
     def _click(self, _e=None):
         self.tray.open_menu()
@@ -2845,6 +2916,9 @@ class TaskbarStrip:
 
     def _update(self):
         cfg = self.tray.cfg
+        if self.suppressed:
+            self._hide()  # the taskbar is over it; _give_up_if_behind says when to try again
+            return
         place = self._placement() if cfg.get("taskbar_text", True) else None
         if place is None:
             self._hide()
@@ -2876,6 +2950,8 @@ class TaskbarStrip:
         HWND_TOPMOST, SWP_NOACTIVATE = -1, 0x0010
         w, h, x, y = geom
         self.user32.SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE)
+        if self._give_up_if_behind(taskbar):
+            self._hide()
 
     def close(self):
         self.closing.set()  # picked up on the Tk thread
@@ -3014,6 +3090,8 @@ class DesktopTray:
         if self.strip:
             items.append(item("Show usage on the taskbar", lambda: self._toggle_taskbar_text(),
                               checked=lambda _i: self.cfg.get("taskbar_text", True)))
+            if self.cfg.get("taskbar_text", True) and self.strip.suppressed:
+                info("    ⚠ hidden — Windows is holding the taskbar above it")
         items.append(item(COLLAPSE_LABEL, lambda: self._toggle_collapsed(),
                           checked=lambda _i: self.cfg.get("collapsed", False)))
         items.append(item("About", self.pystray.Menu(

@@ -150,8 +150,16 @@ fi
 # ---- disk image
 mkdir -p "$ROOT/dist"
 OUT="$ROOT/dist/LLM-Usage-Widget-$VERSION-macos-$ARCH.dmg"
-hdiutil create -volname "LLM Usage Widget $VERSION" -srcfolder "$DMG_ROOT" \
-    -fs HFS+ -format UDZO -ov "$OUT" >/dev/null
+# hdiutil mounts a scratch image while it builds the .dmg, and on the GitHub macOS runners
+# something (Spotlight, diskarbitrationd) now and then grabs it first: "create failed -
+# Resource busy". It is transient, so try a few times before giving up.
+for attempt in 1 2 3 4 5; do
+    hdiutil create -volname "LLM Usage Widget $VERSION" -srcfolder "$DMG_ROOT" \
+        -fs HFS+ -format UDZO -ov "$OUT" >/dev/null && break
+    [ "$attempt" -lt 5 ] || { echo "hdiutil create failed $attempt times, giving up" >&2; exit 1; }
+    echo "hdiutil create failed (attempt $attempt), retrying in $((attempt * 5))s" >&2
+    sleep $((attempt * 5))
+done
 if [ -n "${CODESIGN_IDENTITY:-}" ] && [ "$CODESIGN_IDENTITY" != "-" ]; then
     DMG_SIGN=(codesign --force --timestamp --sign "$CODESIGN_IDENTITY")
     [ -n "${SIGNING_KEYCHAIN:-}" ] && DMG_SIGN+=(--keychain "$SIGNING_KEYCHAIN")

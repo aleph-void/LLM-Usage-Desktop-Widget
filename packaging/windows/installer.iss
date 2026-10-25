@@ -1,15 +1,18 @@
 ; Inno Setup script: per-user installer (no admin rights) that adds a Start Menu
 ; entry and, by default, starts the widget at sign-in.
-; Built by build.ps1:  iscc /DAppVersion=1.0.2 installer.iss
+; Built by build.ps1:  iscc /DAppVersion=1.0.8 /DAppArch=x64 installer.iss  (or /DAppArch=arm64)
 ;
 ; The same .exe also uninstalls, by running the installed copy's own uninstaller
 ; (the one Settings > Apps runs):
 ;
-;   LLM-Usage-Widget-<ver>-windows-setup.exe /uninstall              asks, then removes the app
-;   LLM-Usage-Widget-<ver>-windows-setup.exe /uninstall /VERYSILENT  removes it without asking
+;   LLM-Usage-Widget-<ver>-windows-<arch>-setup.exe /uninstall              asks, then removes the app
+;   LLM-Usage-Widget-<ver>-windows-<arch>-setup.exe /uninstall /VERYSILENT  removes it without asking
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
+#endif
+#ifndef AppArch
+  #define AppArch "x64"
 #endif
 #define AppName "LLM Usage Widget"
 #define AppExe "LLMUsageWidget.exe"
@@ -29,7 +32,15 @@ DisableProgramGroupPage=yes
 DisableDirPage=auto
 PrivilegesRequired=lowest
 OutputDir=..\..\dist
-OutputBaseFilename=LLM-Usage-Widget-{#AppVersion}-windows-setup
+OutputBaseFilename=LLM-Usage-Widget-{#AppVersion}-windows-{#AppArch}-setup
+; The x64 build also runs on Arm64 PCs under emulation; the arm64 build runs only there, natively.
+#if AppArch == "arm64"
+ArchitecturesAllowed=arm64
+ArchitecturesInstallIn64BitMode=arm64
+#else
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+#endif
 SetupIconFile=..\..\assets\icon.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}

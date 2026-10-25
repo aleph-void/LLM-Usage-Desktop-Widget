@@ -58,7 +58,7 @@ Download from the GitHub release (built by `.github/workflows/build-installers.y
 |---|---|---|
 | Linux (Debian/Ubuntu) | `llm-usage-widget_<ver>_all.deb` | `sudo apt install ./llm-usage-widget_*.deb`. Starts right away for every logged-in user, and at login via `/etc/xdg/autostart`. |
 | macOS | `LLM-Usage-Widget-<ver>-macos-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel) | Open it and run *Install LLM Usage Widget.pkg*, which installs `/Applications/LLM Usage.app` plus a login LaunchAgent. Release builds are signed with a Developer ID and notarized by Apple. |
-| Windows | `LLM-Usage-Widget-<ver>-windows-setup.exe` | Per-user install, no admin rights needed. "Start automatically when I sign in" is ticked by default. The build is unsigned, so SmartScreen may warn: click **More info → Run anyway**. Uninstall from *Settings → Apps*, the *Uninstall LLM Usage Widget* Start Menu entry, or by running the setup `.exe` with `/uninstall` (add `/VERYSILENT` to skip the prompts). Settings in `%APPDATA%\llm-usage-widget` are kept. |
+| Windows | `LLM-Usage-Widget-<ver>-windows-x64-setup.exe` (Intel/AMD) or `-windows-arm64-setup.exe` (Arm, e.g. Snapdragon) | Per-user install, no admin rights needed. "Start automatically when I sign in" is ticked by default. The build is unsigned, so SmartScreen may warn: click **More info → Run anyway**. Uninstall from *Settings → Apps*, the *Uninstall LLM Usage Widget* Start Menu entry, or by running the setup `.exe` with `/uninstall` (add `/VERYSILENT` to skip the prompts). Settings in `%APPDATA%\llm-usage-widget` are kept. |
 
 To uninstall on macOS, run *Uninstall LLM Usage Widget.pkg* from the same disk image
 (it asks for an administrator password), or run the copy of the uninstaller inside the app:
@@ -236,7 +236,7 @@ by hand to download them as build artifacts. To build locally on each OS:
 packaging/linux/build-deb.sh                                   # Linux → dist/*.deb
 python3 -m pip install pyinstaller -r requirements.txt
 packaging/macos/build-pkg.sh                                   # macOS → dist/*.dmg
-powershell -File packaging\windows\build.ps1                   # Windows → dist\*-setup.exe (needs Inno Setup 6)
+powershell -File packaging\windows\build.ps1                   # Windows → dist\*-windows-<arch>-setup.exe (needs Inno Setup 6)
 ```
 
 To sign the macOS build locally, set `CODESIGN_IDENTITY` (a "Developer ID Application" identity) and
@@ -287,7 +287,7 @@ not timestamped, or its certificate includes a street address or postal code. Ru
 downloaded installer to check it yourself:
 
 ```powershell
-powershell -File packaging\windows\verify-signature.ps1 .\LLM-Usage-Widget-<ver>-windows-setup.exe
+powershell -File packaging\windows\verify-signature.ps1 .\LLM-Usage-Widget-<ver>-windows-x64-setup.exe
 ```
 
 `/uninstall` runs from the same signed setup `.exe`. The uninstaller that Inno Setup
@@ -433,7 +433,7 @@ python3 -m pytest --cov            # with a coverage report
 The tests never touch the network or your real logins: each one runs against an empty temporary home
 directory, and the provider APIs, AWS, Google Cloud, Azure, GTK/AppIndicator, pystray and Win32 are
 faked. The Tk tests are skipped when there is no display. GitHub Actions runs the suite on every pull request and push to `main`
-(`.github/workflows/tests.yml`) on Linux, macOS and Windows with Python 3.9 to 3.14, plus Ruff and
+(`.github/workflows/tests.yml`) on Linux, macOS and Windows with Python 3.9 to 3.14 (and Windows on Arm with 3.11 and up), plus Ruff and
 ShellCheck, and installs the `.deb` on Ubuntu to run the tests on the system Python.
 
 ## License

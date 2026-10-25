@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-__version__ = "1.0.6"
+__version__ = "1.0.7"
 
 APP_NAME = "llm-usage-widget"
 USER_AGENT = f"llm-usage-widget/{__version__}"
@@ -3172,6 +3172,23 @@ def warn(msg: str) -> None:
         print(msg, file=sys.stderr)
 
 
+def hide_from_dock() -> None:
+    """Keep a script-launched copy out of the Dock and app switcher (macOS).
+
+    Run from a venv, the process is the framework's Python.app, whose Info.plist lacks
+    LSUIElement, so macOS shows a Python icon as soon as AppKit (pystray or Tk) starts.
+    Marking the running bundle as an agent before then stops it from appearing at all;
+    the packaged app sets LSUIElement in its own Info.plist.
+    """
+    try:
+        from Foundation import NSBundle
+        info = NSBundle.mainBundle().infoDictionary()
+        if info is not None:
+            info["LSUIElement"] = "1"
+    except Exception:  # no PyObjC (e.g. widget mode without requirements.txt)
+        pass
+
+
 def acquire_single_instance():
     """Hold a lock for the life of the process; None if another copy has it."""
     path = config_dir() / "instance.lock"
@@ -3210,6 +3227,9 @@ def main() -> int:
     if lock is None:
         warn("LLM Usage Widget is already running.")
         return 0
+
+    if sys.platform == "darwin":
+        hide_from_dock()
 
     if sys.platform.startswith("linux") and not args.widget:
         appindicator = load_appindicator()

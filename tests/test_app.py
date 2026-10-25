@@ -105,12 +105,13 @@ class Recorder:
 
 @pytest.fixture
 def fronts(monkeypatch):
-    r = types.SimpleNamespace(widget=Recorder(), tray=Recorder(), desktop=Recorder(), warnings=[])
+    r = types.SimpleNamespace(widget=Recorder(), tray=Recorder(), desktop=Recorder(), warnings=[], hidden=[])
     monkeypatch.setattr(w, "Widget", r.widget)
     monkeypatch.setattr(w, "Tray", r.tray)
     monkeypatch.setattr(w, "DesktopTray", r.desktop)
     monkeypatch.setattr(w, "warn", r.warnings.append)
     monkeypatch.setattr(w, "acquire_single_instance", lambda: object())
+    monkeypatch.setattr(w, "hide_from_dock", lambda: r.hidden.append(True))
     return r
 
 
@@ -173,6 +174,7 @@ def test_main_widget_flag(monkeypatch, fronts, platform):
     assert run_main(monkeypatch, "--widget", "--framed", "--interval", "5", platform=platform) == 0
     assert fronts.widget.made == [(5, True)]
     assert not fronts.desktop.made
+    assert fronts.hidden == ([True] if platform == "darwin" else [])
 
 
 @pytest.mark.parametrize("platform", ["darwin", "win32"])
@@ -189,6 +191,22 @@ def test_main_desktop_tray(monkeypatch, fronts, platform):
     assert fronts.desktop.ran == 1
     if platform == "win32":
         assert dpi == [1]
+    assert fronts.hidden == ([True] if platform == "darwin" else [])
+
+
+def test_hide_from_dock_marks_the_bundle_as_an_agent(monkeypatch):
+    info = {}
+    bundle = types.SimpleNamespace(infoDictionary=lambda: info)
+    foundation = types.ModuleType("Foundation")
+    foundation.NSBundle = types.SimpleNamespace(mainBundle=lambda: bundle)
+    monkeypatch.setitem(sys.modules, "Foundation", foundation)
+    w.hide_from_dock()
+    assert info == {"LSUIElement": "1"}
+
+
+def test_hide_from_dock_without_pyobjc(monkeypatch):
+    monkeypatch.setitem(sys.modules, "Foundation", None)
+    w.hide_from_dock()  # must not raise
 
 
 @pytest.mark.parametrize("platform", ["darwin", "win32"])

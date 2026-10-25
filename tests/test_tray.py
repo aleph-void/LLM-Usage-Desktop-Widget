@@ -27,7 +27,8 @@ def sync_threads(monkeypatch):
 
 
 def sample_data():
-    soon = datetime.now(timezone.utc) + timedelta(hours=3)
+    # Half a minute short of 3h, so a coarse clock (Windows on Arm) still floors to "2h 59m".
+    soon = datetime.now(timezone.utc) + timedelta(hours=2, minutes=59, seconds=30)
     return [
         w.ProviderUsage("Claude", plan="max", fetched_at=1.0,
                         limits=[w.Limit("Session (5h)", 92, soon), w.Limit("Weekly", 40)]),

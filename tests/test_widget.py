@@ -96,7 +96,8 @@ def texts(widget) -> list[str]:
 
 
 def sample():
-    soon = datetime.now(timezone.utc) + timedelta(hours=5)
+    # Half a minute short of 5h, so a coarse clock (Windows on Arm) still floors to "4h 59m".
+    soon = datetime.now(timezone.utc) + timedelta(hours=4, minutes=59, seconds=30)
     return [
         w.ProviderUsage("Claude", plan="pro", fetched_at=1_700_000_000,
                         limits=[w.Limit("Session (5h)", 95, soon), w.Limit("Weekly", 0)]),

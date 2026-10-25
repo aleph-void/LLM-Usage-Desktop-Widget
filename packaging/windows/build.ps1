@@ -1,4 +1,6 @@
-# Build dist\LLM-Usage-Widget-<version>-windows-setup.exe (run on Windows).
+# Build dist\LLM-Usage-Widget-<version>-windows-<arch>-setup.exe (run on Windows).
+# <arch> is x64 or arm64: that of the Python running PyInstaller, since the frozen app is the
+# same architecture. Build on an Arm64 PC (or the windows-11-arm runner) with Arm64 Python for arm64.
 # The same .exe uninstalls when run with /uninstall (see installer.iss).
 #
 # Freezes the app with PyInstaller (no console window) and packages it with
@@ -14,6 +16,8 @@ $ErrorActionPreference = 'Stop'
 $Root  = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $Build = Join-Path $Root 'build\windows'
 $Exe   = Join-Path $Build 'dist\LLMUsageWidget\LLMUsageWidget.exe'
+$Arch = python -c "import sysconfig; print({'win-amd64': 'x64', 'win-arm64': 'arm64'}.get(sysconfig.get_platform(), ''))"
+if (-not $Arch) { throw 'Unsupported Python: build with 64-bit x64 or Arm64 Python' }
 $Version = if ($env:VERSION) { $env:VERSION } else {
     (Select-String -Path (Join-Path $Root 'usage_widget.py') -Pattern '^__version__ = "(.*)"').Matches[0].Groups[1].Value
 }
@@ -47,7 +51,7 @@ if (-not $iscc) {
         Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 if (-not $iscc) { throw 'Inno Setup 6 (ISCC.exe) not found' }
-& $iscc "/DAppVersion=$Version" (Join-Path $PSScriptRoot 'installer.iss')
+& $iscc "/DAppVersion=$Version" "/DAppArch=$Arch" (Join-Path $PSScriptRoot 'installer.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed' }
 
-Join-Path $Root "dist\LLM-Usage-Widget-$Version-windows-setup.exe"
+Join-Path $Root "dist\LLM-Usage-Widget-$Version-windows-$Arch-setup.exe"

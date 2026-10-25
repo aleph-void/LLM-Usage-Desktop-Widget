@@ -47,6 +47,15 @@ jobs:
         include:
           - runner: ubuntu-24.04
             python: '3.9'
+          # Windows on Arm, for the arm64 installer; setup-python has Arm64 builds from 3.11.
+          - runner: windows-11-arm
+            python: '3.11'
+          - runner: windows-11-arm
+            python: '3.12'
+          - runner: windows-11-arm
+            python: '3.13'
+          - runner: windows-11-arm
+            python: '3.14'
     runs-on: ${{ matrix.runner }}
     # The suite takes about a minute; don't let a hang hold a runner for the 6-hour default.
     timeout-minutes: 15

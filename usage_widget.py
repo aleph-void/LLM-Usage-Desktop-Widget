@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-__version__ = "1.0.8"
+__version__ = "1.0.9"
 
 APP_NAME = "llm-usage-widget"
 USER_AGENT = f"llm-usage-widget/{__version__}"
@@ -568,7 +568,8 @@ def fetch_claude() -> ProviderUsage:
         if used:
             pct = float(extra.get("utilization") or 0)
             label = f"Extra usage ${used:.2f}" + (f" / ${cap:.0f}" if cap else "")
-            usage.limits.append(Limit(label, pct))
+            # Without a cap there is nothing to fill a bar against, so show the spend alone.
+            usage.limits.append(Limit(label, pct if cap else None))
     return usage
 
 
@@ -3213,6 +3214,135 @@ def acquire_single_instance():
     return handle
 
 
+# --------------------------------------------------------------------------
+# Replacing older copies
+# --------------------------------------------------------------------------
+#
+# An older copy that is still running holds the single-instance lock, so a newly installed
+# version would just exit. That happens when the .deb is installed over a copy set up with
+# install.sh, whose ~/.config/autostart entry also shadows the package's /etc/xdg/autostart
+# one (same file name), so the old copy keeps starting at every login.
+
+SCRIPT_NAME = "usage_widget.py"
+PACKAGED_SCRIPT = Path(f"/usr/lib/{APP_NAME}/{SCRIPT_NAME}")  # where the .deb puts it
+SYSTEM_AUTOSTART = Path(f"/etc/xdg/autostart/{APP_NAME}.desktop")
+SCRIPT_VERSION_RE = re.compile(r'^__version__ = "([^"]+)"', re.M)
+
+
+def script_version(path: Path) -> tuple[int, ...] | None:
+    """The version of the usage_widget.py at path, or None if it can't be read."""
+    try:
+        m = SCRIPT_VERSION_RE.search(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    return parse_version(m.group(1)) if m else None
+
+
+def _process_start(pid: int) -> float | None:
+    """When a process started, as a Unix time (Linux only)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        ticks = int(stat.rsplit(")", 1)[1].split()[19])  # field 22, after the parenthesised name
+        boot = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines()
+                    if line.startswith("btime "))
+    except (OSError, ValueError, IndexError, StopIteration):
+        return None
+    return boot + ticks / os.sysconf("SC_CLK_TCK")
+
+
+def _script_path(pid: int, arg: str) -> Path:
+    path = Path(arg)
+    if not path.is_absolute() and os.path.isdir(f"/proc/{pid}"):
+        path = Path(os.readlink(f"/proc/{pid}/cwd")) / path
+    return path
+
+
+def older_copies() -> list[int]:
+    """Pids of other running copies of this script that run older code than this one.
+
+    That is a copy of an older version, or one that started before its script was replaced
+    (an upgrade that didn't stop it). Packaged Windows/macOS builds have no script and are
+    stopped by their installers instead.
+    """
+    mine = parse_version(__version__)
+    try:
+        procs = _process_command_lines()
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found = []
+    for pid, argv0, argv1 in procs:
+        exe = argv0.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if pid == os.getpid() or not exe.startswith("python") or not argv1.endswith(SCRIPT_NAME):
+            continue
+        try:
+            path = _script_path(pid, argv1)
+            version = script_version(path)
+            started = _process_start(pid)
+            stale = started is not None and started < path.stat().st_mtime
+        except OSError:
+            continue
+        if (version and mine and version < mine) or stale:
+            found.append(pid)
+    return found
+
+
+def replace_older_copies(timeout: float = 5):
+    """Stop older running copies and take the single-instance lock from them; None if that fails."""
+    pids = older_copies()
+    if not pids:
+        return None
+    for pid in pids:
+        stop_process(pid)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.25)
+        lock = acquire_single_instance()
+        if lock is not None:
+            return lock
+    return None
+
+
+def _desktop_exec_script(entry: Path) -> Path | None:
+    """The usage_widget.py a .desktop entry runs, if it runs one."""
+    try:
+        text = entry.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("Exec="):
+            for a, b in re.findall(r'"([^"]*)"|(\S+)', line[5:]):
+                if (a or b).endswith(SCRIPT_NAME):
+                    return Path(a or b)
+    return None
+
+
+def retire_shadowing_entries() -> list[Path]:
+    """Remove per-user autostart and launcher entries that hide the package's own and run an older copy.
+
+    Only for the copy the .deb installed, whose /etc/xdg/autostart entry then starts it at login.
+    Returns the entries removed.
+    """
+    me = Path(__file__).resolve()
+    if not SYSTEM_AUTOSTART.exists() or me != PACKAGED_SCRIPT:
+        return []
+    mine = parse_version(__version__)
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    removed = []
+    for entry in (config / "autostart" / f"{APP_NAME}.desktop", data / "applications" / f"{APP_NAME}.desktop"):
+        script = _desktop_exec_script(entry)
+        if script is None or script.resolve() == me:
+            continue
+        version = script_version(script)
+        if version is None or (mine and version < mine):  # gone, or older than this one
+            try:
+                entry.unlink()
+                removed.append(entry)
+            except OSError:
+                pass
+    return removed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -3228,7 +3358,10 @@ def main() -> int:
     if args.once:
         return print_once()
 
-    lock = acquire_single_instance()  # noqa: F841 — held until the process exits
+    if sys.platform.startswith("linux"):
+        for entry in retire_shadowing_entries():
+            warn(f"Removed {entry}, which started an older copy instead of this one.")
+    lock = acquire_single_instance() or replace_older_copies()  # noqa: F841 — held until the process exits
     if lock is None:
         warn("LLM Usage Widget is already running.")
         return 0

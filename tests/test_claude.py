@@ -248,7 +248,7 @@ def test_extra_usage_without_cap(logged_in, fake_http):
     fake_http.responses[USAGE_URL] = {"extra_usage": {"is_enabled": True, "used_credits": 300}}
     usage = w.fetch_claude()
     (lim,) = usage.limits
-    assert (lim.label, lim.percent) == ("Extra usage $3.00", 0.0)
+    assert (lim.label, lim.percent) == ("Extra usage $3.00", None)
     assert usage.credits == w.Credits(used=3.0, cap=None, unit="$", what="extra usage")
 
 

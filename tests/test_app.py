@@ -111,6 +111,8 @@ def fronts(monkeypatch):
     monkeypatch.setattr(w, "DesktopTray", r.desktop)
     monkeypatch.setattr(w, "warn", r.warnings.append)
     monkeypatch.setattr(w, "acquire_single_instance", lambda: object())
+    monkeypatch.setattr(w, "replace_older_copies", lambda: None)
+    monkeypatch.setattr(w, "retire_shadowing_entries", lambda: [])
     monkeypatch.setattr(w, "hide_from_dock", lambda: r.hidden.append(True))
     return r
 
@@ -145,6 +147,147 @@ def test_main_already_running(monkeypatch, fronts):
     assert run_main(monkeypatch) == 0
     assert fronts.warnings == ["LLM Usage Widget is already running."]
     assert not (fronts.widget.ran or fronts.tray.ran or fronts.desktop.ran)
+
+
+def test_main_replaces_an_older_copy(monkeypatch, fronts):
+    monkeypatch.setattr(w, "acquire_single_instance", lambda: None)
+    monkeypatch.setattr(w, "replace_older_copies", lambda: object())
+    monkeypatch.setattr(w, "load_appindicator", lambda: "AI")
+    assert run_main(monkeypatch) == 0
+    assert fronts.tray.ran == 1
+
+
+def test_main_reports_retired_entries(monkeypatch, fronts, tmp_path):
+    entry = tmp_path / "llm-usage-widget.desktop"
+    monkeypatch.setattr(w, "retire_shadowing_entries", lambda: [entry])
+    monkeypatch.setattr(w, "load_appindicator", lambda: "AI")
+    run_main(monkeypatch)
+    assert fronts.warnings == [f"Removed {entry}, which started an older copy instead of this one."]
+
+
+# -- replacing older copies ------------------------------------------------------
+
+def write_script(path, version):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'"""x"""\n__version__ = "{version}"\n')
+    return path
+
+
+def test_script_version_of_a_file(tmp_path):
+    assert w.script_version(write_script(tmp_path / "usage_widget.py", "0.0.1")) == (0, 0, 1)
+    assert w.script_version(tmp_path / "missing.py") is None
+    assert w.script_version(ROOT / "usage_widget.py") == w.parse_version(w.__version__)
+
+
+def test_older_copies(monkeypatch, tmp_path):
+    old = write_script(tmp_path / "old" / "usage_widget.py", "0.0.1")
+    same = write_script(tmp_path / "same" / "usage_widget.py", w.__version__)
+    newer = write_script(tmp_path / "newer" / "usage_widget.py", "99.0")
+    replaced = write_script(tmp_path / "replaced" / "usage_widget.py", w.__version__)
+    monkeypatch.setattr(w, "_process_command_lines", lambda: [
+        (11, "/usr/bin/python3", str(old)),
+        (12, "/usr/bin/python3", str(same)),
+        (13, "/usr/bin/python3", str(newer)),
+        (14, "python3", str(replaced)),  # started before its script was upgraded
+        (15, "/usr/bin/node", str(old)),
+        (16, "/usr/bin/python3", "/elsewhere/other.py"),
+        (os.getpid(), "/usr/bin/python3", str(old)),
+    ])
+    monkeypatch.setattr(w, "_process_start", lambda pid: 0.0 if pid == 14 else 4e9)
+    assert w.older_copies() == [11, 14]
+
+
+def test_older_copies_without_a_process_list(monkeypatch):
+    def fail():
+        raise OSError
+    monkeypatch.setattr(w, "_process_command_lines", fail)
+    assert w.older_copies() == []
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_process_start_of_this_process():
+    started = w._process_start(os.getpid())
+    assert started is not None and started <= __import__("time").time() + 1
+    assert w._process_start(-1) is None
+
+
+def test_replace_older_copies(monkeypatch):
+    stopped, locks = [], iter([None, "lock"])
+    monkeypatch.setattr(w, "older_copies", lambda: [5, 6])
+    monkeypatch.setattr(w, "stop_process", stopped.append)
+    monkeypatch.setattr(w, "acquire_single_instance", lambda: next(locks))
+    monkeypatch.setattr(w.time, "sleep", lambda _s: None)
+    assert w.replace_older_copies() == "lock"
+    assert stopped == [5, 6]
+
+
+def test_replace_older_copies_with_none_running(monkeypatch):
+    monkeypatch.setattr(w, "older_copies", lambda: [])
+    monkeypatch.setattr(w, "stop_process", lambda pid: pytest.fail("nothing to stop"))
+    assert w.replace_older_copies() is None
+
+
+def test_replace_older_copies_gives_up(monkeypatch):
+    clock = iter(range(0, 100))
+    monkeypatch.setattr(w, "older_copies", lambda: [5])
+    monkeypatch.setattr(w, "stop_process", lambda pid: True)
+    monkeypatch.setattr(w, "acquire_single_instance", lambda: None)
+    monkeypatch.setattr(w.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(w.time, "time", lambda: next(clock))
+    assert w.replace_older_copies(timeout=5) is None
+
+
+@pytest.fixture
+def packaged(monkeypatch, tmp_path, home):
+    """This copy installed by the .deb, with its system autostart entry."""
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    system = tmp_path / "etc" / "llm-usage-widget.desktop"
+    system.parent.mkdir()
+    system.write_text("[Desktop Entry]\n")
+    monkeypatch.setattr(w, "SYSTEM_AUTOSTART", system)
+    monkeypatch.setattr(w, "PACKAGED_SCRIPT", w.Path(w.__file__).resolve())
+    return home
+
+
+def desktop_entry(path, script):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'[Desktop Entry]\nType=Application\nExec=/usr/bin/python3 "{script}"\n')
+    return path
+
+
+def test_retire_shadowing_entries(packaged):
+    old = write_script(packaged / ".local" / "share" / "llm-usage-widget" / "usage_widget.py", "0.0.1")
+    autostart = desktop_entry(packaged / ".config" / "autostart" / "llm-usage-widget.desktop", old)
+    launcher = desktop_entry(packaged / ".local" / "share" / "applications" / "llm-usage-widget.desktop", old)
+    assert w.retire_shadowing_entries() == [autostart, launcher]
+    assert not autostart.exists() and not launcher.exists()
+
+
+def test_retire_shadowing_entries_for_a_removed_copy(packaged):
+    autostart = desktop_entry(packaged / ".config" / "autostart" / "llm-usage-widget.desktop",
+                              packaged / "gone" / "usage_widget.py")
+    assert w.retire_shadowing_entries() == [autostart]
+
+
+def test_retire_shadowing_entries_keeps_newer_and_unrelated(packaged):
+    newer = write_script(packaged / "checkout" / "usage_widget.py", "99.0")
+    autostart = desktop_entry(packaged / ".config" / "autostart" / "llm-usage-widget.desktop", newer)
+    launcher = packaged / ".local" / "share" / "applications" / "llm-usage-widget.desktop"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("[Desktop Entry]\nExec=llm-usage-widget\n")
+    assert w.retire_shadowing_entries() == []
+    assert autostart.exists() and launcher.exists()
+
+
+def test_retire_shadowing_entries_only_for_the_package(packaged, monkeypatch, tmp_path):
+    old = write_script(tmp_path / "old" / "usage_widget.py", "0.0.1")
+    autostart = desktop_entry(packaged / ".config" / "autostart" / "llm-usage-widget.desktop", old)
+    monkeypatch.setattr(w, "PACKAGED_SCRIPT", tmp_path / "usr" / "lib" / "usage_widget.py")
+    assert w.retire_shadowing_entries() == []
+    monkeypatch.setattr(w, "PACKAGED_SCRIPT", w.Path(w.__file__).resolve())
+    monkeypatch.setattr(w, "SYSTEM_AUTOSTART", tmp_path / "missing.desktop")
+    assert w.retire_shadowing_entries() == []
+    assert autostart.exists()
 
 
 def test_main_linux_appindicator(monkeypatch, fronts):

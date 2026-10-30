@@ -2243,6 +2243,7 @@ class Tray:
         self.interval = max(MIN_INTERVAL, interval)
         self.data: list[ProviderUsage] = []
         self.update: dict | None = None
+        self.about = None
         self.fetching = False
         self.last_fetch = 0.0
 
@@ -2299,6 +2300,19 @@ class Tray:
     def _toggle_collapsed(self, _item):
         update_config(collapsed=not load_config().get("collapsed", False))
         self.GLib.idle_add(self.render)
+
+    def _show_about(self, _item):
+        if self.about is None:
+            about = self.about = self.Gtk.AboutDialog()
+            about.set_program_name("LLM Usage Widget")
+            about.set_version(f"Version {__version__}")
+            about.set_website(REPO_URL)
+            about.set_website_label("Source")
+            about.set_copyright("© Aleph Void LLC")
+            about.add_credit_section("Made by", [f"Aleph Void LLC {LLC_URL}"])
+            about.connect("response", lambda d, _r: d.hide())
+            about.connect("delete-event", lambda d, _e: d.hide_on_delete())
+        self.about.present()
 
     def _tick(self):
         if not self.fetching and time.time() - self.last_fetch >= self.interval:
@@ -2362,13 +2376,14 @@ class Tray:
                     reset = format_remaining(lim.resets_at)
                     info(f"    {lim.label}" + (f"  ·  resets in {reset}" if reset else ""))
                     continue
+                # One line per limit, bar first so the bars line up: GNOME Shell's menu does not scroll,
+                # so every line it is taller by can push the bottom of the menu off the screen.
                 filled = round(max(0, min(100, lim.percent)) / 10)
                 bar = "█" * filled + "░" * (10 - filled)
                 mark = {"warning": "  ▲", "critical": "  ●"}.get(lim.level(), "")
-                info(f"    {lim.label}:  {lim.percent:.0f}%{mark}")
                 reset = format_remaining(lim.resets_at)
-                tail = f"  resets in {reset}" if reset else ""
-                info(f"    {bar}{tail}")
+                tail = f"  ·  resets in {reset}" if reset else ""
+                info(f"    {bar}  {lim.label}:  {lim.percent:.0f}%{mark}{tail}")
 
         menu.append(Gtk.SeparatorMenuItem())
         if self.last_fetch:
@@ -2396,16 +2411,10 @@ class Tray:
         collapse.set_active(cfg.get("collapsed", False))
         collapse.connect("activate", self._toggle_collapsed)
         menu.append(collapse)
-        about = Gtk.Menu()
-        version = Gtk.MenuItem(label=f"LLM Usage Widget — Version {__version__}")
-        version.set_sensitive(False)
-        about.append(version)
-        for text, url in ((f"Source: {REPO_URL}", REPO_URL), (f"Aleph Void LLC: {LLC_URL}", LLC_URL)):
-            item = Gtk.MenuItem(label=text)
-            item.connect("activate", lambda _w, u=url: Gtk.show_uri_on_window(None, u, Gtk.get_current_event_time()))
-            about.append(item)
+        # A dialog, not a submenu: GNOME Shell unfolds submenus inside the menu, which does not scroll, so
+        # one at the bottom unfolds off the screen.
         about_item = Gtk.MenuItem(label="About")
-        about_item.set_submenu(about)
+        about_item.connect("activate", self._show_about)
         menu.append(about_item)
         quit_item = Gtk.MenuItem(label="Quit")
         quit_item.connect("activate", lambda *_: Gtk.main_quit())

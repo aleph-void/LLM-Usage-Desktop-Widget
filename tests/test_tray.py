@@ -97,6 +97,25 @@ class FakeMenu:
         return next(i for i in self.items if i.label == label)
 
 
+class FakeAboutDialog:
+    def __init__(self):
+        self.fields, self.handlers, self.presented = {}, {}, 0
+
+    def __getattr__(self, name):
+        if name.startswith("set_"):
+            return lambda value: self.fields.__setitem__(name[4:], value)
+        raise AttributeError(name)
+
+    def add_credit_section(self, title, people):
+        self.fields["credits"] = (title, people)
+
+    def connect(self, signal, callback):
+        self.handlers[signal] = callback
+
+    def present(self):
+        self.presented += 1
+
+
 class FakeIndicator:
     def __init__(self, *args):
         self.args = args
@@ -128,7 +147,7 @@ class FakeIndicator:
 def gtk(monkeypatch):
     opened, timers, idle = [], [], []
     Gtk = types.SimpleNamespace(
-        Menu=FakeMenu, MenuItem=FakeMenuItem, SeparatorMenuItem=FakeSeparator, CheckMenuItem=FakeCheckMenuItem,
+        Menu=FakeMenu, MenuItem=FakeMenuItem, AboutDialog=FakeAboutDialog, SeparatorMenuItem=FakeSeparator, CheckMenuItem=FakeCheckMenuItem,
         show_uri_on_window=lambda win, uri, t: opened.append(uri), get_current_event_time=lambda: 0,
         main_quit=lambda: opened.append("quit"), main=lambda: None,
     )
@@ -187,10 +206,10 @@ def test_tray_render_after_fetch(linux_tray, gtk):
     assert tray.ind.icon == "llm-usage-critical"
     labels = tray.ind.menu.labels()
     assert labels[0] == "Claude  (Max)"
-    assert "    Session (5h):  92%  ●" in labels
-    assert any(lab.startswith("    █████████░  resets in 2h 59m") for lab in labels if lab)
+    assert labels[1] == "    █████████░  Session (5h):  92%  ●  ·  resets in 2h 59m"
+    assert labels[2] == "    ████░░░░░░  Weekly:  40%"
     assert "Codex  (Plus)" in labels
-    assert "    5h:  80%  ▲" in labels
+    assert "    ████████░░  5h:  80%  ▲" in labels
     assert any(lab.startswith("    This month $5.00  ·  resets in") for lab in labels if lab)
     assert {"Refresh now", "Open Claude usage page", "Open Codex usage page", "Open Bedrock usage page", "About",
             "Quit"} <= set(labels)
@@ -201,12 +220,17 @@ def test_tray_menu_actions(linux_tray, gtk):
     run_idle(gtk)
     menu = linux_tray.ind.menu
     menu.item("Open Codex usage page").handlers["activate"](None)
-    about = menu.item("About").submenu
-    assert about.items[0].label == f"LLM Usage Widget — Version {w.__version__}"
-    assert not about.items[0].sensitive
-    about.items[1].handlers["activate"](None)
+    item = menu.item("About")
+    assert item.submenu is None  # GNOME Shell would unfold it inside the menu, off the bottom of the screen
+    item.handlers["activate"](None)
+    item.handlers["activate"](None)
+    about = linux_tray.about
+    assert about.presented == 2  # one dialog, brought back up
+    assert about.fields["version"] == f"Version {w.__version__}"
+    assert about.fields["website"] == w.REPO_URL
+    assert about.fields["credits"] == ("Made by", [f"Aleph Void LLC {w.LLC_URL}"])
     menu.item("Quit").handlers["activate"](None)
-    assert gtk.opened == [w.USAGE_PAGES["Codex"], w.REPO_URL, "quit"]
+    assert gtk.opened == [w.USAGE_PAGES["Codex"], "quit"]
 
 
 def test_tray_cutoff_menu(linux_tray, gtk):

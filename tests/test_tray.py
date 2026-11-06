@@ -147,7 +147,8 @@ class FakeIndicator:
 def gtk(monkeypatch):
     opened, timers, idle = [], [], []
     Gtk = types.SimpleNamespace(
-        Menu=FakeMenu, MenuItem=FakeMenuItem, AboutDialog=FakeAboutDialog, SeparatorMenuItem=FakeSeparator, CheckMenuItem=FakeCheckMenuItem,
+        Menu=FakeMenu, MenuItem=FakeMenuItem, SeparatorMenuItem=FakeSeparator, CheckMenuItem=FakeCheckMenuItem,
+        AboutDialog=FakeAboutDialog,
         show_uri_on_window=lambda win, uri, t: opened.append(uri), get_current_event_time=lambda: 0,
         main_quit=lambda: opened.append("quit"), main=lambda: None,
     )

@@ -1,0 +1,50 @@
+name: Deploy site
+
+# Publishes site/ (the marketing site at llm-usage-widget.alephvoid.com) to GitHub Pages.
+# site/assets/screenshots is a symlink to images/, so the screenshots in the README and on the
+# site come from one place; rsync -L copies the real files into the Pages artifact.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'images/**'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Assemble site
+        run: |
+          mkdir -p dist-site
+          rsync -aL --exclude=README.md site/ dist-site/
+          test -f dist-site/assets/screenshots/ubuntu.png
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist-site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

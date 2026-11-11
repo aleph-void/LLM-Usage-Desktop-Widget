@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aleph Void LLM Usage Widget &mdash; Your Claude &amp; Codex Limits, Always in View</title>
+  <meta name="description" content="A free, open-source desktop widget that shows your Claude and Codex plan usage limits, with a countdown to each reset, in the Linux top bar, the macOS menu bar or the Windows taskbar. Also reports Amazon Bedrock, Google Vertex AI and Azure spend." />
+  <link rel="icon" href="/favicon.ico" sizes="48x48" />
+  <link rel="icon" type="image/svg+xml" href="assets/img/logo.svg" />
+  <link rel="icon" type="image/png" href="assets/img/app-icon.png" sizes="256x256" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Aleph Void LLM Usage Widget" />
+  <meta property="og:url" content="https://llm-usage-widget.alephvoid.com/" />
+  <meta property="og:title" content="LLM Usage Widget — Your Claude & Codex Limits, Always in View" />
+  <meta property="og:description" content="Session and weekly limits, model-scoped limits and time until each reset, in your top bar, menu bar or taskbar. Free and open source for Linux, macOS and Windows." />
+  <meta property="og:image" content="https://llm-usage-widget.alephvoid.com/assets/img/app-icon.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="256" />
+  <meta property="og:image:height" content="256" />
+  <meta property="og:image:alt" content="LLM Usage Widget icon" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="LLM Usage Widget — Your Claude & Codex Limits, Always in View" />
+  <meta name="twitter:description" content="Claude and Codex plan usage limits with reset countdowns, in the Linux top bar, macOS menu bar or Windows taskbar. Free and open source." />
+  <meta name="twitter:image" content="https://llm-usage-widget.alephvoid.com/assets/img/app-icon.png" />
+  <meta name="twitter:image:alt" content="LLM Usage Widget icon" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Navigation -->
+  <nav id="nav">
+    <div class="nav-inner">
+      <a href="#" class="nav-brand">
+        <img class="nav-logo" src="assets/img/app-icon.png" alt="LLM Usage Widget" />
+        <span>LLM Usage Widget</span>
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="#how-it-works">How It Works</a>
+        <a href="#providers">Providers</a>
+        <a href="#faq">FAQ</a>
+        <a href="support.html">Support</a>
+      </div>
+      <div class="nav-actions">
+        <a href="#install" class="btn btn-sm btn-primary">Download</a>
+      </div>
+      <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+    <div class="mobile-menu" id="mobile-menu">
+      <a href="#features">Features</a>
+      <a href="#screenshots">Screenshots</a>
+      <a href="#how-it-works">How It Works</a>
+      <a href="#providers">Providers</a>
+      <a href="#faq">FAQ</a>
+      <a href="support.html">Support</a>
+      <a href="#install" class="btn btn-primary">Download</a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-content">
+        <div class="hero-badge">// Claude &amp; Codex &middot; Linux, macOS &amp; Windows</div>
+        <h1>Know Your Limits<br /><span class="text-gradient">Before You Hit Them</span></h1>
+        <p class="hero-subtitle">
+          LLM Usage Widget puts your Claude and Codex plan usage where your system status icons
+          live: the session and weekly windows, model-scoped limits and a countdown to each reset,
+          one glance away in the top bar, menu bar or taskbar.
+        </p>
+        <p class="hero-claim">
+          <strong>Nothing to configure:</strong> it reuses the logins Claude Code and the Codex CLI
+          already keep on your machine, only ever reads them, and sends each token only to the
+          provider that issued it. Free and open source under the MIT license.
+        </p>
+        <div class="hero-actions">
+          <a href="#install" class="btn btn-primary btn-lg">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Download Free
+          </a>
+          <a href="https://github.com/aleph-void/LLM-Usage-Desktop-Widget" class="btn btn-outline btn-lg" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="currentColor" class="btn-icon"><path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.37-3.87-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.69 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
+            View on GitHub
+          </a>
+        </div>
+        <div class="hero-platforms">
+          <span class="hero-platforms-label">Runs on</span>
+          <div class="platform-icons">
+            <div class="platform-icon" title="Linux: GNOME, KDE, XFCE, Cinnamon and other AppIndicator panels">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 9 12 6 15"/><line x1="12" y1="15" x2="17" y2="15"/></svg>
+              <span>Linux</span>
+            </div>
+            <div class="platform-icon" title="macOS (Apple Silicon and Intel)">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+              <span>macOS</span>
+            </div>
+            <div class="platform-icon" title="Windows 10 and 11 (x64 and Arm64)">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.6l7.4-1v7H3V5.6zm8.4-1.2L21 3v8.6h-9.6V4.4zM3 12.6h7.4v7l-7.4-1v-6zm8.4 0H21V21l-9.6-1.4v-7z"/></svg>
+              <span>Windows</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Widget mockup -->
+      <div class="hero-visual">
+        <div class="lu-mockup" aria-hidden="true">
+          <div class="lu-bar">
+            <span class="lu-readout"><span class="lu-gauge"><i></i><i></i><i></i></span>Claude 99%&nbsp;&nbsp;Codex 20%</span>
+            <svg class="lu-hide-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+            <svg class="lu-hide-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+            <span class="lu-bar-clock">10:51</span>
+          </div>
+          <div class="lu-menu">
+            <div class="lu-group">
+              <div class="lu-provider">Claude <small>(Max)</small></div>
+              <div class="lu-limit">
+                <div class="lu-limit-head"><span>Session (5h): <b>3%</b></span><span>resets in 3h 38m</span></div>
+                <div class="lu-track"><span class="lu-fill" style="width:3%"></span></div>
+              </div>
+              <div class="lu-limit">
+                <div class="lu-limit-head"><span>Weekly: <b>72%</b></span><span>resets in 13h 08m</span></div>
+                <div class="lu-track"><span class="lu-fill warn" style="width:72%"></span></div>
+              </div>
+              <div class="lu-limit">
+                <div class="lu-limit-head"><span>Weekly &middot; Fable: <b>99%</b></span><span>resets in 13h 08m</span></div>
+                <div class="lu-track"><span class="lu-fill crit" style="width:99%"></span></div>
+              </div>
+            </div>
+            <div class="lu-group">
+              <div class="lu-provider">Codex <small>(Pro)</small></div>
+              <div class="lu-limit">
+                <div class="lu-limit-head"><span>Weekly: <b>20%</b></span><span>resets in 6d 4h</span></div>
+                <div class="lu-track"><span class="lu-fill" style="width:20%"></span></div>
+              </div>
+            </div>
+            <div class="lu-actions">
+              <div class="lu-dim">Updated 10:51</div>
+              <div>Refresh now</div>
+              <div>Open Claude usage page</div>
+              <div class="lu-sub">Stop Claude at <span>95% &rsaquo;</span></div>
+              <div>Quit</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features" class="features">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">// Features</span>
+        <h2>Every Limit, <span class="text-gradient">One Glance Away</span></h2>
+        <p>No more opening a terminal to type <code>/usage</code> halfway through a task. The widget keeps the numbers next to your clock and tells you how long until each window resets.</p>
+      </div>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="2"/><line x1="2" y1="8" x2="22" y2="8"/><line x1="14" y1="5.5" x2="19" y2="5.5"/></svg>
+          </div>
+          <h3>Where Your Status Icons Live</h3>
+          <p>A compact <code>Claude 99%&nbsp;&nbsp;Codex 13%</code> readout in the Linux top bar, the macOS menu bar, or drawn right on the Windows taskbar, in the next empty gap, never over your buttons.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          </div>
+          <h3>Every Window, Every Reset</h3>
+          <p>Click for the full list: the 5-hour session, weekly windows and model-scoped limits, each with its percentage, a bar and the exact time until it resets.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="20" x2="6" y2="14"/><line x1="12" y1="20" x2="12" y2="9"/><line x1="18" y1="20" x2="18" y2="4"/></svg>
+          </div>
+          <h3>Color at a Glance</h3>
+          <p>Bars and icons turn amber at 70% and red at 90%, or follow the severity the provider reports. If a refresh fails, the last numbers stay up, marked stale.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg>
+          </div>
+          <h3>Credits When the Plan Runs Out</h3>
+          <p>Once a plan hits 100% and usage credits remain (Claude's extra usage or a Codex credit balance), the readout switches to what's left, like <code>Claude 75% left</code>.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          </div>
+          <h3>Cutoff Quotas</h3>
+          <p>Pick <em>Stop Claude at 90%</em> and the widget stops running <code>claude</code> CLI processes when the plan reaches it, then clears itself. Credit cutoffs cap extra spend the same way.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          </div>
+          <h3>Zero Setup, Read-Only</h3>
+          <p>Log in to <code>claude</code> and <code>codex</code> once and you're done. Credentials are only read, never modified, and the widget never refreshes tokens, so it can't log your CLI out.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+          </div>
+          <h3>Bedrock, Vertex &amp; Azure</h3>
+          <p>Running the CLIs on a cloud instead of a subscription? See spend against your budget, month-to-date cost and today's tokens from your existing AWS, Google Cloud or Azure login.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          </div>
+          <h3>Settings That Follow You</h3>
+          <p>On macOS and Windows, settings and cutoffs sync through iCloud Drive and OneDrive, even between a Mac with only iCloud and a PC with only OneDrive.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="11" y="11" width="8" height="6" rx="1"/></svg>
+          </div>
+          <h3>Floating Widget &amp; Logo Mode</h3>
+          <p>No tray? Run an always-on-top floating window instead. Want the numbers out of sight? <em>Collapse to logo</em> shows just the Aleph Void &#x2135;&#x2080; mark until you click.</p>
+        </div>
+      </div>
+
+      <div class="thresholds" aria-label="Color thresholds">
+        <div class="threshold">
+          <span class="threshold-swatch" style="background: var(--color-success)"></span>
+          <div><div class="name">Below 70%</div><div class="label">Plenty left</div></div>
+        </div>
+        <div class="threshold">
+          <span class="threshold-swatch" style="background: var(--color-warn)"></span>
+          <div><div class="name">70% and up</div><div class="label">Pace yourself</div></div>
+        </div>
+        <div class="threshold">
+          <span class="threshold-swatch" style="background: var(--color-error)"></span>
+          <div><div class="name">90% and up</div><div class="label">Nearly out</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Screenshots -->
+  <section id="screenshots" class="demos">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">// Screenshots</span>
+        <h2>At Home on <span class="text-gradient">Every Desktop</span></h2>
+        <p>The same widget in the Ubuntu top bar, the macOS menu bar and on the Windows taskbar, each with its menu open. Click any shot to enlarge.</p>
+      </div>
+      <div class="shot-grid shot-grid--os">
+        <figure class="shot">
+          <img src="assets/screenshots/ubuntu.png" alt="LLM Usage Widget in the Ubuntu top bar with its menu open, showing Claude session and weekly limits with bars and Codex weekly usage" loading="lazy" />
+          <figcaption>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 9 12 6 15"/><line x1="12" y1="15" x2="17" y2="15"/></svg>
+            Ubuntu top bar (AppIndicator)
+          </figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/screenshots/macos.png" alt="LLM Usage Widget in the macOS menu bar with its menu open, listing Claude and Codex limits and reset times" loading="lazy" />
+          <figcaption>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+            macOS menu bar
+          </figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/screenshots/windows.png" alt="LLM Usage Widget drawn on the Windows 11 taskbar with its menu open, showing Claude 99% and Codex 27%" loading="lazy" />
+          <figcaption>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.6l7.4-1v7H3V5.6zm8.4-1.2L21 3v8.6h-9.6V4.4zM3 12.6h7.4v7l-7.4-1v-6zm8.4 0H21V21l-9.6-1.4v-7z"/></svg>
+            Windows 11 taskbar
+          </figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- How It Works -->
+  <section id="how-it-works" class="how-it-works hardware">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">// Architecture</span>
+        <h2>How It <span class="text-gradient">Works</span></h2>
+        <p>The widget asks each provider the same question the official CLIs ask for their own <code>/usage</code> and <code>/status</code> screens, using the login you already have.</p>
+      </div>
+      <div class="modes-grid">
+        <div class="mode-card">
+          <div class="mode-number">1</div>
+          <h3>Reads Your Existing Logins</h3>
+          <p class="mode-desc">Claude Code's credentials from the macOS Keychain or <code>~/.claude</code>, and the Codex CLI's from <code>~/.codex/auth.json</code>. Cloud sections use your AWS, <code>gcloud</code> or <code>az</code> login.</p>
+          <ul class="mode-details">
+            <li>
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              Read, never written
+            </li>
+            <li>
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              No API keys to paste
+            </li>
+          </ul>
+        </div>
+        <div class="mode-card">
+          <div class="mode-number">2</div>
+          <h3>Asks Only the Issuer</h3>
+          <p class="mode-desc">Each token goes only to the provider that issued it, over HTTPS, with redirects rejected and response sizes bounded. Nothing passes through an Aleph Void server.</p>
+          <ul class="mode-details">
+            <li>
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              No middleman, no telemetry
+            </li>
+            <li>
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              Owner-only settings files
+            </li>
+          </ul>
+        </div>
+        <div class="mode-card">
+          <div class="mode-number">3</div>
+          <h3>Shows It Where You Look</h3>
+          <p class="mode-desc">Refreshes every 3 minutes (or every minute, if you like), then updates the readout, the colored icon and the menu. One copy runs at a time and starts with your session.</p>
+          <ul class="mode-details">
+            <li>
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              Refresh now, any time
+            </li>
+            <li>
+              <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              Daily update check
+            </li>
+          </ul>
+        </div>
+      </div>
+      <div class="workflow-steps">
+        <h3 class="workflow-title">Getting Started</h3>
+        <div class="steps">
+          <div class="step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <h4>Log In to the CLIs</h4>
+              <p>Run <code>claude</code> &rarr; <code>/login</code> and <code>codex login</code> once with your subscription.</p>
+            </div>
+          </div>
+          <div class="step-arrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+          <div class="step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <h4>Install</h4>
+              <p>Run the installer for your OS. It starts right away and at every login.</p>
+            </div>
+          </div>
+          <div class="step-arrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+          <div class="step">
+            <div class="step-num">3</div>
+            <div class="step-content">
+              <h4>Glance</h4>
+              <p>Your usage appears next to the clock. Click it for every limit and reset.</p>
+            </div>
+          </div>
+          <div class="step-arrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+          <div class="step">
+            <div class="step-num">4</div>
+            <div class="step-content">
+              <h4>Set a Cutoff</h4>
+              <p>Optionally, stop the CLI at a percentage or a credit amount you choose.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Providers -->
+  <section id="providers" class="docs">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">// Providers</span>
+        <h2>Subscriptions <span class="text-gradient">and Clouds</span></h2>
+        <p>Claude and Codex subscription limits out of the box. If your CLIs run on a cloud instead, the matching section turns on by itself from Claude Code's or Codex's own settings.</p>
+      </div>
+      <div class="req-table-wrap">
+        <table class="req-table">
+          <thead>
+            <tr><th>Provider</th><th>Shows</th><th>Credentials from</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Claude<small>Pro, Max, Team</small></td><td>Session and weekly windows, model-scoped limits, extra usage</td><td>Claude Code: macOS Keychain or <code>~/.claude/.credentials.json</code></td></tr>
+            <tr><td>Codex<small>ChatGPT plans</small></td><td>Plan windows and credit balance</td><td>Codex CLI: <code>~/.codex/auth.json</code></td></tr>
+            <tr><td>Amazon Bedrock<small>incl. bedrock-mantle</small></td><td>AWS Budget, month-to-date spend, tokens today</td><td>Your AWS profile, SSO or environment, via boto3</td></tr>
+            <tr><td>Google Vertex AI</td><td>Tokens today, month-to-date spend, budget</td><td>Application Default Credentials (<code>gcloud auth application-default login</code>)</td></tr>
+            <tr><td>Azure OpenAI<small>&amp; Microsoft Foundry</small></td><td>Azure budget, month-to-date cost, tokens today</td><td><code>az login</code>, or azure-identity</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="install-note">Cloud billing data is cached and fetched at most every 6 hours by default, so AWS Cost Explorer costs about $1.20 a month. Billing can lag by a day, so treat it as a dashboard, not a spending alarm.</p>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section id="install" class="install">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">// Download</span>
+        <h2>Get <span class="text-gradient">LLM Usage Widget</span></h2>
+        <p>Free, for every platform. macOS builds are signed with a Developer ID and notarized by Apple; Windows installers are Authenticode-signed. No Python needed on macOS or Windows.</p>
+      </div>
+      <div class="install-grid install-grid--3">
+        <div class="install-card install-card--multi">
+          <svg class="install-platform-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 9 12 6 15"/><line x1="12" y1="15" x2="17" y2="15"/></svg>
+          <h3>Linux</h3>
+          <p>Debian &amp; Ubuntu &middot; .deb</p>
+          <div class="install-links">
+            <a href="https://github.com/aleph-void/LLM-Usage-Desktop-Widget/releases/latest" data-asset="deb">Download .deb</a>
+          </div>
+          <p class="install-cmd"><code>sudo apt install ./llm-usage-widget_*.deb</code></p>
+        </div>
+        <div class="install-card install-card--multi">
+          <svg class="install-platform-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+          <h3>macOS</h3>
+          <p>Signed &amp; notarized &middot; .dmg</p>
+          <div class="install-links">
+            <a href="https://github.com/aleph-void/LLM-Usage-Desktop-Widget/releases/latest" data-asset="mac-arm64">Apple Silicon</a>
+            <a href="https://github.com/aleph-void/LLM-Usage-Desktop-Widget/releases/latest" data-asset="mac-x64" class="secondary">Intel</a>
+          </div>
+          <p class="install-cmd">Open it and run <em>Install LLM Usage Widget.pkg</em></p>
+        </div>
+        <div class="install-card install-card--multi">
+          <svg class="install-platform-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.6l7.4-1v7H3V5.6zm8.4-1.2L21 3v8.6h-9.6V4.4zM3 12.6h7.4v7l-7.4-1v-6zm8.4 0H21V21l-9.6-1.4v-7z"/></svg>
+          <h3>Windows</h3>
+          <p>No admin rights &middot; .exe</p>
+          <div class="install-links">
+            <a href="https://github.com/aleph-void/LLM-Usage-Desktop-Widget/releases/latest" data-asset="win-x64">x64</a>
+            <a href="https://github.com/aleph-void/LLM-Usage-Desktop-Widget/releases/latest" data-asset="win-arm64" class="secondary">Arm64</a>
+          </div>
+          <p class="install-cmd">Starts automatically when you sign in</p>
+        </div>
+      </div>
+      <p class="install-note">
+        <span id="release-version" class="release-version">Latest release on GitHub</span><br />
+        Every installer starts the widget right away and again at each login.
+        <a href="https://github.com/aleph-void/LLM-Usage-Desktop-Widget/releases" target="_blank" rel="noopener">All releases &amp; release notes &rarr;</a>
+      </p>
+
+      <h3 class="subsection-title">Or Run It From Source</h3>
+      <p class="subsection-note">It's a single Python script. Clone the repository and use the install scripts, or run it directly. Other desktops (Fedora, Arch, KDE, XFCE, Cinnamon) use <code>./install.sh</code>.</p>
+<pre class="code"><span class="dim"># Linux / macOS: install, with login autostart</span>
+git clone https://github.com/aleph-void/LLM-Usage-Desktop-Widget.git
+cd LLM-Usage-Desktop-Widget &amp;&amp; ./install.sh
+
+<span class="dim"># Windows: double-click install.cmd</span>
+
+<span class="dim"># Or just print your usage in the terminal</span>
+python3 usage_widget.py --once</pre>
+    </div>
+  </section>
+
+  <!-- Open source -->
+  <section class="oss-band">
+    <div class="container">
+      <div class="section-header" style="margin-bottom: 0;">
+        <span class="section-label">// Open Source</span>
+        <h2>Free, MIT-Licensed, <span class="text-gradient">Built in the Open</span></h2>
+      </div>
+      <p>Read every line that touches your credentials, file an issue, or add a provider: write a <code>fetch_&lt;name&gt;()</code> and its tests. The suite runs on Linux, macOS and Windows against Python 3.9 to 3.14, with no network and no real logins.</p>
+      <div class="hero-actions">
+        <a href="https://github.com/aleph-void/LLM-Usage-Desktop-Widget" class="btn btn-outline" target="_blank" rel="noopener">Source on GitHub</a>
+        <a href="https://github.com/sponsors/aleph-void" class="btn btn-primary" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+          Sponsor Aleph Void
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="faq hardware">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">// FAQ</span>
+        <h2>Frequently Asked <span class="text-gradient">Questions</span></h2>
+      </div>
+      <div class="faq-list">
+        <details class="faq-item">
+          <summary>Is it really free?</summary>
+          <p>Yes. LLM Usage Widget is open source under the MIT license, with no paid tier, account or license key. If it saves you a surprise lockout, you can <a href="https://github.com/sponsors/aleph-void" target="_blank" rel="noopener">sponsor Aleph Void</a> on GitHub.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Do I need an API key?</summary>
+          <p>No. The widget reads the login that Claude Code (<code>claude</code>) and the Codex CLI (<code>codex</code>) already store on your machine. Log in to each once with your subscription and it works. An API-key Codex login has no plan limits to show; use <code>codex login</code> with ChatGPT.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Is it safe to let it read my credentials?</summary>
+          <p>Credentials are only read, never modified, and each token is sent only to the provider that issued it, over HTTPS with redirects rejected. The widget never refreshes tokens itself, because rotating a refresh token would log your CLI out. The code is open for you to check.</p>
+        </details>
+        <details class="faq-item">
+          <summary>It says my login expired. What now?</summary>
+          <p>Claude Code and Codex refresh their own tokens while you use them. If you haven't used one for a while, its access token can expire. Open that CLI once and the widget picks up the new token on its next refresh.</p>
+        </details>
+        <details class="faq-item">
+          <summary>How does a cutoff stop the CLI?</summary>
+          <p>On the first refresh that finds a provider at or over its cutoff, the widget stops every running process of that provider's CLI (<code>claude</code> or <code>codex</code>), leaves a note in the menu and turns the cutoff off so you can start again. The Claude and Codex desktop apps are never stopped. Usage is checked on each refresh, so a busy session can go slightly past the cutoff.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Which Linux desktops work?</summary>
+          <p>Any panel with AppIndicator / StatusNotifierItem support. Ubuntu's GNOME works out of the box; on other GNOME setups enable the "AppIndicator and KStatusNotifierItem Support" extension. KDE, XFCE, Cinnamon and others work too, though some panels show only the icon. For desktops without a tray, run the floating window with <code>--widget</code>.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Why does Windows sometimes hide the numbers on the taskbar?</summary>
+          <p>Windows has no API for text on the taskbar, so the widget uses a small window that follows it. After Start, Search or the Widgets board, Windows 11 can leave the taskbar in a layer no ordinary program can draw over, until the shell resets it. The tray icon and its tooltip still show the numbers meanwhile.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Will it break when a provider changes its API?</summary>
+          <p>It might. The widget uses the same internal endpoints the official CLIs use for their <code>/usage</code> and <code>/status</code> screens, which are undocumented. If a provider shows an error after an update, a new release usually follows quickly, and the widget tells you when one is out.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Does it collect any data?</summary>
+          <p>No analytics or telemetry. Apart from the providers you use, it only asks GitHub once a day whether a newer release exists. See the <a href="privacy.html">Privacy Policy</a>.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Is this an official Anthropic or OpenAI app?</summary>
+          <p>No. LLM Usage Widget is an independent project by Aleph Void LLC and is not affiliated with or endorsed by Anthropic, OpenAI, Amazon, Google or Microsoft.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <img class="footer-logo" src="assets/img/app-icon.png" alt="LLM Usage Widget" />
+          <span>LLM Usage Widget</span>
+        </div>
+        <div class="footer-links">
+          <a href="index.html">Home</a>
+          <a href="#features">Features</a>
+          <a href="#screenshots">Screenshots</a>
+          <a href="#how-it-works">How It Works</a>
+          <a href="#install">Download</a>
+          <a href="#faq">FAQ</a>
+          <a href="support.html">Support</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="https://github.com/aleph-void/LLM-Usage-Desktop-Widget" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://alephvoid.com" target="_blank" rel="noopener">Aleph Void</a>
+        </div>
+        <p class="footer-copy">Created by <a href="https://alephvoid.com" target="_blank" rel="noopener">Aleph Void LLC</a>. &copy; 2026 Aleph Void LLM Usage Widget. Claude is a trademark of Anthropic, PBC; Codex and ChatGPT are trademarks of OpenAI. LLM Usage Widget is an independent project, not affiliated with either.</p>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Lightbox -->
+  <div class="lightbox" id="lightbox" aria-hidden="true">
+    <button class="lightbox-close" id="lightbox-close" aria-label="Close">&times;</button>
+    <img id="lightbox-img" src="" alt="" />
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

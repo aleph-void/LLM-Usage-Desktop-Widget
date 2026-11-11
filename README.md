@@ -2,6 +2,8 @@
 
 [![Sponsor Aleph Void](https://img.shields.io/badge/Sponsor-Aleph%20Void-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/aleph-void)
 
+Website: [llm-usage-widget.alephvoid.com](https://llm-usage-widget.alephvoid.com) (source in [`site/`](site/))
+
 Shows your **Claude** and **Codex** plan usage limits (session / weekly windows, model-scoped
 limits, and time until each resets) where your system status icons live:
 

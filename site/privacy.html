@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy &mdash; Aleph Void LLM Usage Widget</title>
+  <meta name="description" content="LLM Usage Widget has no analytics or telemetry. It sends each login token only to the provider that issued it and checks GitHub once a day for updates." />
+  <link rel="icon" href="/favicon.ico" sizes="48x48" />
+  <link rel="icon" type="image/svg+xml" href="assets/img/logo.svg" />
+  <link rel="icon" type="image/png" href="assets/img/app-icon.png" sizes="256x256" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Aleph Void LLM Usage Widget" />
+  <meta property="og:url" content="https://llm-usage-widget.alephvoid.com/privacy.html" />
+  <meta property="og:title" content="LLM Usage Widget — Your Claude & Codex Limits, Always in View" />
+  <meta property="og:description" content="Session and weekly limits, model-scoped limits and time until each reset, in your top bar, menu bar or taskbar. Free and open source for Linux, macOS and Windows." />
+  <meta property="og:image" content="https://llm-usage-widget.alephvoid.com/assets/img/app-icon.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="256" />
+  <meta property="og:image:height" content="256" />
+  <meta property="og:image:alt" content="LLM Usage Widget icon" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="LLM Usage Widget — Your Claude & Codex Limits, Always in View" />
+  <meta name="twitter:description" content="Claude and Codex plan usage limits with reset countdowns, in the Linux top bar, macOS menu bar or Windows taskbar. Free and open source." />
+  <meta name="twitter:image" content="https://llm-usage-widget.alephvoid.com/assets/img/app-icon.png" />
+  <meta name="twitter:image:alt" content="LLM Usage Widget icon" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Navigation -->
+  <nav id="nav">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-brand">
+        <img class="nav-logo" src="assets/img/app-icon.png" alt="LLM Usage Widget" />
+        <span>LLM Usage Widget</span>
+      </a>
+      <div class="nav-links">
+        <a href="index.html#features">Features</a>
+        <a href="index.html#screenshots">Screenshots</a>
+        <a href="index.html#how-it-works">How It Works</a>
+        <a href="index.html#providers">Providers</a>
+        <a href="index.html#faq">FAQ</a>
+        <a href="support.html">Support</a>
+      </div>
+      <div class="nav-actions">
+        <a href="index.html#install" class="btn btn-sm btn-primary">Download</a>
+      </div>
+      <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+    <div class="mobile-menu" id="mobile-menu">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#screenshots">Screenshots</a>
+      <a href="index.html#how-it-works">How It Works</a>
+      <a href="index.html#providers">Providers</a>
+      <a href="index.html#faq">FAQ</a>
+      <a href="support.html">Support</a>
+      <a href="index.html#install" class="btn btn-primary">Download</a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-content">
+        <div class="hero-badge">// Privacy Policy</div>
+        <h1>Your Tokens Go Only<br /><span class="text-gradient">Where They Came From</span></h1>
+        <p class="hero-subtitle">
+          LLM Usage Widget has no analytics, no telemetry and no account. It talks to the
+          providers you already use, with the logins you already have, and to GitHub once a day
+          to check for updates. Nothing goes to Aleph Void.
+        </p>
+        <p class="hero-platforms-label">Last updated: November 11, 2026</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="docs">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">// Data Handling</span>
+        <h2>What Leaves <span class="text-gradient">Your Computer</span></h2>
+      </div>
+      <div class="docs-grid">
+        <div class="doc-card">
+          <h3>Usage requests to Anthropic and OpenAI</h3>
+          <div class="doc-content">
+            <p>To read your plan usage, the widget sends the <strong>access token</strong> that Claude Code or the Codex CLI stored on your computer to the provider that issued it, and to no one else:</p>
+            <ul>
+              <li><strong>Claude:</strong> <code>api.anthropic.com</code></li>
+              <li><strong>Codex:</strong> <code>chatgpt.com</code></li>
+            </ul>
+            <p>Requests use HTTPS only and refuse redirects. Each provider handles them under its own privacy policy, as it does for the CLI itself.</p>
+          </div>
+        </div>
+        <div class="doc-card">
+          <h3>Cloud providers (only if you use them)</h3>
+          <div class="doc-content">
+            <p>The Bedrock, Vertex AI and Azure sections turn on only when your CLIs are set up to use that cloud, or when you enable them in <code>config.json</code>. They query that cloud's own billing and monitoring APIs with your existing credentials:</p>
+            <ul>
+              <li><strong>AWS:</strong> Budgets, Cost Explorer, CloudWatch, STS</li>
+              <li><strong>Google Cloud:</strong> Cloud Monitoring, BigQuery (your billing export), OAuth token refresh</li>
+              <li><strong>Azure:</strong> Azure Resource Manager, Cost Management, Azure Monitor</li>
+            </ul>
+          </div>
+        </div>
+        <div class="doc-card">
+          <h3>Update checks (GitHub)</h3>
+          <div class="doc-content">
+            <p>Once a day the widget asks GitHub's public API (<code>api.github.com</code>) for the latest release of this project. The request carries no information about you or your usage; GitHub sees your IP address, as with any request. The answer is cached locally.</p>
+            <p>To turn the check off, add <code>"update_check": false</code> to <code>config.json</code>.</p>
+          </div>
+        </div>
+        <div class="doc-card">
+          <h3>Settings sync (your own cloud drive)</h3>
+          <div class="doc-content">
+            <p>On macOS and Windows, settings and cutoffs are written to an <code>llm-usage-widget</code> folder in your <strong>iCloud Drive</strong> or <strong>OneDrive</strong>, if either is signed in. Those services sync the folder under your own account; the widget does not upload anything itself.</p>
+            <p>To stop syncing on a computer, add <code>"sync": false</code> to its local <code>config.json</code>.</p>
+          </div>
+        </div>
+        <div class="doc-card">
+          <h3>What we don't collect</h3>
+          <div class="doc-content">
+            <p>No analytics, crash reporting or usage tracking. The widget never sends your credentials, usage numbers, account IDs, prompts or files to Aleph Void or any third party. Credentials are only read, never modified or copied elsewhere.</p>
+          </div>
+        </div>
+        <div class="doc-card">
+          <h3>What's stored locally</h3>
+          <div class="doc-content">
+            <ul>
+              <li><code>config.json</code>: your settings and cutoffs.</li>
+              <li><code>cloud-cache.json</code>: cached cloud spend, token counts and the latest-release answer.</li>
+            </ul>
+            <p>They live in <code>~/.config/llm-usage-widget</code>, <code>~/Library/Application Support/llm-usage-widget</code> or <code>%APPDATA%\llm-usage-widget</code>, with owner-only permissions on Linux and macOS.</p>
+          </div>
+        </div>
+        <div class="doc-card">
+          <h3>This website</h3>
+          <div class="doc-content">
+            <p>This site is hosted on GitHub Pages and loads fonts from Google Fonts. The download section asks GitHub's public API for the latest release so its buttons can link straight to the files. All of these receive standard request data such as your IP address. The site sets no cookies and runs no analytics.</p>
+          </div>
+        </div>
+        <div class="doc-card">
+          <h3>Contact</h3>
+          <div class="doc-content">
+            <p>Questions about this policy: <a href="mailto:support@alephvoid.com?subject=LLM%20Usage%20Widget%20privacy">support@alephvoid.com</a>. Because the widget is open source, you can also read exactly what it sends in <a href="https://github.com/aleph-void/LLM-Usage-Desktop-Widget" target="_blank" rel="noopener">its source code</a>. If this policy changes, the date above will change with it.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <img class="footer-logo" src="assets/img/app-icon.png" alt="LLM Usage Widget" />
+          <span>LLM Usage Widget</span>
+        </div>
+        <div class="footer-links">
+          <a href="index.html">Home</a>
+          <a href="index.html#features">Features</a>
+          <a href="index.html#screenshots">Screenshots</a>
+          <a href="index.html#how-it-works">How It Works</a>
+          <a href="index.html#install">Download</a>
+          <a href="index.html#faq">FAQ</a>
+          <a href="support.html">Support</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="https://github.com/aleph-void/LLM-Usage-Desktop-Widget" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://alephvoid.com" target="_blank" rel="noopener">Aleph Void</a>
+        </div>
+        <p class="footer-copy">Created by <a href="https://alephvoid.com" target="_blank" rel="noopener">Aleph Void LLC</a>. &copy; 2026 Aleph Void LLM Usage Widget. Claude is a trademark of Anthropic, PBC; Codex and ChatGPT are trademarks of OpenAI. LLM Usage Widget is an independent project, not affiliated with either.</p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="main.js"></script>
+</body>
+</html>

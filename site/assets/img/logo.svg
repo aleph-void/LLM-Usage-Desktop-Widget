@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+<!-- The Aleph Void mark, ℵ₀ (LOGO_SVG in usage_widget.py), in white on a violet tile. -->
+<rect x="12" y="12" width="232" height="232" rx="52" fill="#6d28d9"/>
+<g transform="translate(44 44) scale(7)" fill="none" stroke="#ffffff" stroke-linecap="round">
+<path stroke-width="2.4" d="M4 3.5 C7.8 8.8 11.8 14 15.5 19"/>
+<path stroke-width="2.4" d="M8.6 9.8 C5.8 11.6 4.2 14.8 4.4 19.5"/>
+<path stroke-width="2.4" d="M11.4 13.4 C15.6 12.6 17.6 9 16.6 3.6"/>
+<circle stroke-width="1.4" cx="19.6" cy="20.2" r="1.6"/>
+</g>
+</svg>

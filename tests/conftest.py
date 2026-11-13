@@ -34,7 +34,7 @@ APP_ENV = (
     "AWS_SESSION_TOKEN", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
     "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT",
     "GCLOUD_PROJECT", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG", "AZURE_SUBSCRIPTION_ID",
-    "ANTHROPIC_FOUNDRY_BASE_URL", "ANTHROPIC_FOUNDRY_RESOURCE",
+    "ANTHROPIC_FOUNDRY_BASE_URL", "ANTHROPIC_FOUNDRY_RESOURCE", "QWEN_CLOUD_COOKIE",
     "OneDrive", "OneDriveConsumer", "OneDriveCommercial",  # synced settings must not reach the real OneDrive
 )
 
@@ -59,6 +59,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(w, "_SSL_CONTEXT", None)
     monkeypatch.setattr(w, "_TOKENS", {})
+    monkeypatch.setattr(w.qwen_cloud, "_FIREFOX_CACHE", {})
     monkeypatch.setattr(w, "_update_failed_at", 0.0)
     # No real gcloud / az, and no google-auth or azure-identity picking up real credentials.
     monkeypatch.setattr(w, "run_cli", lambda args, timeout=30: None)

@@ -6,6 +6,9 @@ this machine, so there is nothing to configure: if `claude` and `codex` are
 logged in, the widget works. Credentials are only ever read, never written,
 and are sent only to the provider that issued them.
 
+Qwen Cloud Token Plan usage comes from the home.qwencloud.com login in
+Firefox (or a Cookie header in config.json), since Qwen Cloud has no API for it.
+
 When Claude Code or Codex run on Amazon Bedrock (including the bedrock-mantle
 endpoint), Google Vertex AI or Azure OpenAI / Microsoft Foundry there are no
 plan limits; instead it shows that cloud's spend and token counts using your
@@ -43,6 +46,8 @@ import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import qwen_cloud
 
 __version__ = "1.0.10"
 
@@ -480,7 +485,7 @@ def _claude_credentials() -> dict:
         if isinstance(data, dict) and data.get("claudeAiOauth", {}).get("accessToken"):
             return data["claudeAiOauth"]
     env = claude_code_env()
-    if claude_uses_bedrock(env) or claude_uses_vertex(env) or claude_uses_foundry(env):
+    if claude_uses_bedrock(env) or claude_uses_vertex(env) or claude_uses_foundry(env) or claude_uses_qwen(env):
         raise NotUsed
     raise AuthError("not logged in — run `claude` and /login")
 
@@ -521,6 +526,12 @@ def claude_uses_foundry(env: dict[str, str] | None = None) -> bool:
     """Claude Code on Microsoft Foundry (Azure)."""
     env = claude_code_env() if env is None else env
     return _truthy(env.get("CLAUDE_CODE_USE_FOUNDRY"))
+
+
+def claude_uses_qwen(env: dict[str, str] | None = None) -> bool:
+    """Claude Code pointed at Qwen Cloud's Token Plan (or Model Studio) Anthropic-compatible endpoint."""
+    env = claude_code_env() if env is None else env
+    return bool(qwen_cloud.HOST_RE.search(env.get("ANTHROPIC_BASE_URL", "")))
 
 
 def fetch_claude() -> ProviderUsage:
@@ -639,8 +650,13 @@ def codex_azure_urls() -> list[str]:
     return [u for u in codex_base_urls() if AZURE_HOST_RE.match(u)]
 
 
+def codex_qwen_urls() -> list[str]:
+    """base_url values that point at Qwen Cloud's Token Plan or Model Studio endpoint."""
+    return [u for u in codex_base_urls() if qwen_cloud.HOST_RE.search(u)]
+
+
 def codex_cloud_urls() -> list[str]:
-    return codex_bedrock_urls() + codex_vertex_urls() + codex_azure_urls()
+    return codex_bedrock_urls() + codex_vertex_urls() + codex_azure_urls() + codex_qwen_urls()
 
 
 def _codex_windows(prefix: str, rl: dict | None, out: list[Limit]) -> None:
@@ -1420,8 +1436,71 @@ def fetch_azure() -> ProviderUsage:
     return usage
 
 
+# --------------------------------------------------------------------------
+# Qwen Cloud Token Plan (via the home.qwencloud.com console login; see qwen_cloud.py)
+# --------------------------------------------------------------------------
+#
+# The login comes from Firefox, or from a Cookie header in config.json (for another
+# browser), which can also hide the section:
+#
+#     "qwen": {"cookie": "login_qwencloud_ticket=…; …"}     or     "qwen": false
+
+QWEN_LOGIN = "log in at home.qwencloud.com in Firefox"
+QWEN_PLAN_INTERVAL = 3600  # the plan and its credit totals rarely change
+
+
+def qwen_cookies() -> tuple[str, str] | None:
+    """(Cookie header for the console, for the data gateway), or None when Qwen Cloud isn't set up."""
+    cfg = load_config().get("qwen")
+    if cfg is False:
+        return None
+    header = os.environ.get("QWEN_CLOUD_COOKIE") or (cfg.get("cookie") if isinstance(cfg, dict) else None)
+    if isinstance(header, str) and header.strip():
+        header = qwen_cloud.clean_cookie_header(header)
+        return header, header
+    cookies = qwen_cloud.firefox_cookies()
+    if not cookies:
+        if cfg is None:
+            return None
+        raise AuthError(f"not logged in — {QWEN_LOGIN}")
+    return qwen_cloud.console_cookies(cookies)
+
+
+def _qwen_request(url: str, headers: dict, form: dict | None) -> dict:
+    """http_json for qwen_cloud: a rejected or expired login (401/403, a redirect to the login page,
+    or an HTML page where JSON was expected) is raised as qwen_cloud.LoginRequired."""
+    try:
+        return http_json(url, headers, form=form, auth_errors=False)
+    except HTTPStatusError as e:
+        if e.code in (401, 403) or 300 <= e.code < 400:
+            raise qwen_cloud.LoginRequired(str(e)) from None
+        raise
+    except json.JSONDecodeError:
+        raise qwen_cloud.LoginRequired("not a JSON reply") from None
+
+
+def fetch_qwen() -> ProviderUsage:
+    cookies = qwen_cookies()
+    if cookies is None:
+        raise NotUsed
+    if not all(cookies):
+        raise AuthError(f"not logged in — {QWEN_LOGIN}")
+    try:
+        qwen = qwen_cloud.fetch_usage(*cookies, _qwen_request,
+                                      cached=lambda key, compute: _cached(key, QWEN_PLAN_INTERVAL, compute))
+    except qwen_cloud.LoginRequired:
+        raise AuthError(f"login expired — {QWEN_LOGIN}") from None
+    usage = ProviderUsage("Qwen", plan=qwen.plan)
+    for win in qwen.windows:
+        label = win.label
+        if win.total is not None:
+            label += f" · {_human(win.used)} / {_human(win.total)} credits"
+        usage.limits.append(Limit(label, win.percent, win.resets_at))
+    return usage
+
+
 PROVIDERS = (("Claude", fetch_claude), ("Codex", fetch_codex), ("Bedrock", fetch_bedrock),
-             ("Vertex", fetch_vertex), ("Azure", fetch_azure))
+             ("Vertex", fetch_vertex), ("Azure", fetch_azure), ("Qwen", fetch_qwen))
 
 
 def fetch_all() -> list[ProviderUsage]:
@@ -1633,6 +1712,7 @@ def cutoff_clis(name: str) -> set[str]:
         "Bedrock": (claude_uses_bedrock, codex_bedrock_urls),
         "Vertex": (claude_uses_vertex, codex_vertex_urls),
         "Azure": (claude_uses_foundry, codex_azure_urls),
+        "Qwen": (claude_uses_qwen, codex_qwen_urls),
     }.get(name, (None, None))
     if claude is None:
         return set()
@@ -1920,6 +2000,7 @@ THEME = {
     "bedrock": "#ff9900",
     "vertex": "#4285f4",
     "azure": "#0078d4",
+    "qwen": "#615ced",
 }
 BAR_WIDTH = 210
 BAR_HEIGHT = 6
@@ -2185,8 +2266,9 @@ USAGE_PAGES = {
     "Bedrock": "https://console.aws.amazon.com/costmanagement/home#/cost-explorer",
     "Vertex": "https://console.cloud.google.com/billing/reports",
     "Azure": "https://portal.azure.com/#view/Microsoft_Azure_CostManagement/Menu/~/costanalysis",
+    "Qwen": qwen_cloud.DASHBOARD,
 }
-CLOUD_PROVIDERS = {"Bedrock", "Vertex", "Azure"}  # only listed when in use
+CLOUD_PROVIDERS = {"Bedrock", "Vertex", "Azure", "Qwen"}  # only listed when in use
 
 
 def usage_pages(data: list[ProviderUsage]) -> dict[str, str]:

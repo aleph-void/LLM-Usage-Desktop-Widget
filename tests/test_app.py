@@ -50,7 +50,7 @@ def test_fetch_all_with_nothing_set_up():
 
 
 def test_providers_order():
-    assert [name for name, _ in w.PROVIDERS] == ["Claude", "Codex", "Bedrock", "Vertex", "Azure"]
+    assert [name for name, _ in w.PROVIDERS] == ["Claude", "Codex", "Bedrock", "Vertex", "Azure", "Qwen"]
 
 
 # -- print_once ----------------------------------------------------------------

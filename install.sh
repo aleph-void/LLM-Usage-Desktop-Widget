@@ -119,6 +119,7 @@ linux_install() {
     stop_running
     mkdir -p "$DEST" "$(dirname "$ICON")"
     install -m 0755 "$SRC_DIR/usage_widget.py" "$DEST/usage_widget.py"
+    install -m 0644 "$SRC_DIR/qwen_cloud.py" "$DEST/qwen_cloud.py"
     install -m 0644 "$SRC_DIR/assets/$APP.svg" "$ICON"
 
     write_desktop_entry "$LAUNCHER" "$py" ""
@@ -163,6 +164,7 @@ mac_install() {
     stop_running
     mkdir -p "$DEST"
     install -m 0755 "$SRC_DIR/usage_widget.py" "$DEST/usage_widget.py"
+    install -m 0644 "$SRC_DIR/qwen_cloud.py" "$DEST/qwen_cloud.py"
 
     say "Creating virtualenv and installing pystray + Pillow"
     [ -x "$DEST/venv/bin/python" ] || "$py" -m venv "$DEST/venv"

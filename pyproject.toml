@@ -1,4 +1,4 @@
-# Tool settings only; the app is a single script and is not packaged from here.
+# Tool settings only; the app is a script (plus its helper modules) and is not packaged from here.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -10,7 +10,7 @@ timeout = 120
 timeout_method = "thread"
 
 [tool.coverage.run]
-source = ["usage_widget"]
+source = ["usage_widget", "qwen_cloud"]
 
 [tool.coverage.report]
 show_missing = true

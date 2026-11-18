@@ -43,6 +43,7 @@ the browser.
 | Bedrock | Your AWS credentials (profile, SSO, env vars), via boto3 | AWS Budgets, Cost Explorer, CloudWatch |
 | Vertex | Google Application Default Credentials (`gcloud auth application-default login`) | Cloud Monitoring, BigQuery billing export |
 | Azure | The Azure CLI login (`az login`), or azure-identity if installed | Azure Monitor, Cost Management, Consumption budgets |
+| Qwen | Your home.qwencloud.com login in Firefox, or a Cookie header in `config.json` | `cs-data.qwencloud.com` console gateway (Token Plan usage) |
 
 > These are the same internal endpoints the official CLIs use for their `/usage` and `/status`
 > screens. They are undocumented and may change; if a provider shows an error after an update,
@@ -421,10 +422,47 @@ current one is used (or all of them, with azure-identity). Credentials come from
 on the resources (with *Monitoring Reader*) and *Cost Management Reader* on the subscription. Cost data is
 cached like Bedrock's: Cost Management is free but throttled, and only updates a few times a day.
 
+## Qwen Cloud Token Plan
+
+If you have a [Qwen Cloud Token Plan](https://docs.qwencloud.com/token-plan/personal/token-plan-personal-overview),
+the widget adds a **Qwen** section with the plan's usage windows and when each resets: the monthly quota, plus
+the 5-hour and weekly windows when your plan reports them. The menu shows the plan (Lite, Essential, Standard,
+Pro) and, where Qwen Cloud reports them, the credits used of the window's total, e.g. `Monthly · 1.1k / 20.0k credits`.
+
+Qwen Cloud has no API for this: the Token Plan key (`sk-sp-…`) can only call models, and the `qwencloud` CLI
+does not see Individual plans. So the widget asks the same console gateway that the Token Plan page uses, with your
+home.qwencloud.com login (the approach [CodexBar](https://github.com/steipete/CodexBar)'s Qwen Cloud provider takes; the code is in
+[`qwen_cloud.py`](qwen_cloud.py)).
+It reads that login from **Firefox** (regular, Snap and Flatpak on Linux, and Firefox on macOS and Windows), from a
+copy of the profile's cookie store, only the `qwencloud.com` cookies, and sends them only to `qwencloud.com`.
+Chrome and other browsers encrypt their cookies, so with those, paste a `Cookie:` header into `config.json`
+instead: open the [Token Plan page](https://home.qwencloud.com/billing/subscription/token-plan-individual), then
+the browser's developer tools → *Network*, reload, click a request to `home.qwencloud.com` and copy its `Cookie`
+request header:
+
+```json
+{
+  "qwen": {"cookie": "login_qwencloud_ticket=…; …"}
+}
+```
+
+The `QWEN_CLOUD_COOKIE` environment variable works too. The section appears by itself once Firefox is logged in
+to Qwen Cloud; `"qwen": false` hides it, `"qwen": true` shows it (with a login hint) even when no login is found.
+Qwen Cloud logs the console out after a while; the widget then says so, and logging in again in Firefox fixes it
+on the next refresh. (A pasted cookie has to be pasted again.) The plan name and credit totals are fetched at most
+once an hour. Team plans are not supported yet.
+
+A *Stop Qwen at* cutoff stops Claude Code or Codex when they run on Qwen Cloud: Claude Code with an
+`ANTHROPIC_BASE_URL`, or Codex with a `base_url`, on `token-plan.*.maas.aliyuncs.com`, `dashscope*.aliyuncs.com` or
+`qwencloud.com`. Like the other cloud backends, such a CLI's own section is hidden when it has no subscription login.
+
 ## Adding a provider
 
 Write a `fetch_<name>()` that returns a `ProviderUsage` and add it to `PROVIDERS`, then add tests for
-it under `tests/` (see `tests/test_codex.py` for the pattern: canned responses, no network).
+it under `tests/` (see `tests/test_codex.py` for the pattern: canned responses, no network). A provider
+with much code of its own can live in a module next to `usage_widget.py`, as Qwen Cloud does in
+`qwen_cloud.py`: keep it standard-library only and free of imports from `usage_widget`, have the widget pass
+in `http_json`, and add the file to `install.sh`, `install.ps1` and `packaging/linux/build-deb.sh`.
 
 ## Running the tests
 

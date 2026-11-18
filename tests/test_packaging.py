@@ -93,6 +93,7 @@ def test_make_icon(tmp_path):
     (tmp_path / "assets").mkdir()
     shutil.copy(ROOT / "packaging" / "make_icon.py", tmp_path / "packaging" / "make_icon.py")
     shutil.copy(ROOT / "usage_widget.py", tmp_path / "usage_widget.py")
+    shutil.copy(ROOT / "qwen_cloud.py", tmp_path / "qwen_cloud.py")
     out = subprocess.run([sys.executable, str(tmp_path / "packaging" / "make_icon.py")], capture_output=True,
                          text=True, timeout=120, check=False)
     assert out.returncode == 0, out.stderr

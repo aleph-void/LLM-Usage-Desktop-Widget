@@ -79,6 +79,7 @@ Say "Installing to $Dest"
 Stop-Widget
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 Copy-Item -Force (Join-Path $SrcDir 'usage_widget.py') $Dest
+Copy-Item -Force (Join-Path $SrcDir 'qwen_cloud.py') $Dest
 
 $venvPy = Join-Path $Dest 'venv\Scripts\python.exe'
 Say 'Creating virtualenv and installing dependencies'

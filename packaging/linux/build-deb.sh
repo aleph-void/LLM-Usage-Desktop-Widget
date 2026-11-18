@@ -15,6 +15,7 @@ chmod 0755 "$STAGE"
 trap 'rm -rf "$STAGE"' EXIT
 
 install -Dm0644 "$ROOT/usage_widget.py"            "$STAGE/usr/lib/$APP/usage_widget.py"
+install -Dm0644 "$ROOT/qwen_cloud.py"              "$STAGE/usr/lib/$APP/qwen_cloud.py"
 install -Dm0644 "$ROOT/assets/$APP.svg"            "$STAGE/usr/share/icons/hicolor/scalable/apps/$APP.svg"
 install -Dm0644 "$ROOT/README.md"                  "$STAGE/usr/share/doc/$APP/README.md"
 
